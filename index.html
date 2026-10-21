@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AI Creator Studio</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;font-family:Arial,sans-serif;background:#0b1020;color:#fff}
+header{padding:22px 16px;background:#151c32;text-align:center}
+header h1{margin:0;color:#7c9cff;font-size:26px}
+header p{color:#c4cbe0;font-size:13px}
+main{max-width:650px;margin:auto;padding:16px}
+.card{background:#151c32;padding:18px;margin:15px 0;border-radius:14px;border:1px solid #293452}
+h2{font-size:18px;margin-top:0;color:#9eb5ff}
+label{display:block;margin:12px 0 7px;font-size:14px}
+input,textarea,select{width:100%;padding:12px;border-radius:8px;border:1px solid #394765;background:#0b1020;color:white}
+textarea{min-height:90px;resize:vertical}
+button{width:100%;padding:13px;margin-top:12px;border:0;border-radius:9px;background:#536dfe;color:white;font-weight:bold;font-size:15px}
+button.secondary{background:#263653}
+.checks{display:flex;gap:15px;flex-wrap:wrap}
+.checks label{display:flex;align-items:center;gap:6px}
+.checks input{width:auto}
+.note{font-size:12px;color:#aeb8d0;line-height:1.6}
+#result{white-space:pre-wrap;line-height:1.6;font-size:14px}
+footer{text-align:center;padding:25px;color:#9aa6c3;font-size:12px}
+</style>
+</head>
+<body>
+<header>
+<h1>🚀 AI Creator Studio</h1>
+<p>Your YouTube, Shorts & Social Media Workspace</p>
+</header>
+
+<main>
+<div class="card">
+<h2>🎬 1. Select Your Video</h2>
+<label>Choose video from your mobile</label>
+<input type="file" id="video" accept="video/*">
+<p class="note">Video sirf select hoga. Abhi automatic upload ya editing connected nahi hai.</p>
+</div>
+
+<div class="card">
+<h2>🧠 2. Roman Hindi SEO Generator</h2>
+<label>Video ka topic ya short summary likho</label>
+<textarea id="topic" placeholder="Example: 5 best free AI tools jo mobile par chalte hain"></textarea>
+<label>Video language</label>
+<select id="lang">
+<option>Roman Hindi</option>
+<option>Hindi</option>
+<option>English</option>
+</select>
+<button onclick="makeSEO()">✨ Generate SEO Details</button>
+<div id="result"></div>
+<button class="secondary" onclick="copySEO()">📋 Copy SEO Details</button>
+</div>
+
+<div class="card">
+<h2>🎨 3. YouTube Thumbnail</h2>
+<label>Select thumbnail image</label>
+<input type="file" id="thumb" accept="image/*" onchange="previewThumb()">
+<img id="preview" style="display:none;width:100%;margin-top:12px;border-radius:8px" alt="Thumbnail preview">
+<p class="note">Yahan image preview hoga. Automatic AI thumbnail design abhi connected nahi hai.</p>
+</div>
+
+<div class="card">
+<h2>📱 4. Select Publishing Platforms</h2>
+<div class="checks">
+<label><input type="checkbox" id="yt" checked> YouTube</label>
+<label><input type="checkbox" id="ig"> Instagram</label>
+<label><input type="checkbox" id="fb"> Facebook</label>
+</div>
+<label>Content type</label>
+<select id="kind">
+<option>Full YouTube Video</option>
+<option>YouTube Short</option>
+<option>Instagram Reel</option>
+<option>Facebook Reel</option>
+<option>Image Post</option>
+</select>
+<label>Publishing date and time</label>
+<input type="datetime-local" id="schedule">
+<p class="note">Ye selection planner hai. Real publishing ke liye secure server aur official API connection chahiye.</p>
+<button onclick="savePlan()">💾 Save Publishing Plan</button>
+<div id="planResult" class="note"></div>
+</div>
+
+<div class="card">
+<h2>✂️ 5. Shorts Workflow</h2>
+<p class="note">Long video se Shorts banane ke liye video processing, interesting moments selection, vertical cropping aur subtitles ka feature baad mein connect karenge.</p>
+<button class="secondary" onclick="alert('Shorts processing abhi setup nahi hui hai.')">Open Shorts Workflow</button>
+</div>
+
+<div class="card">
+<h2>📊 6. Next Automation Steps</h2>
+<p class="note">1. YouTube account authorization<br>
+2. Secure video upload backend<br>
+3. Thumbnail upload integration<br>
+4. Shorts video processing<br>
+5. Instagram aur Facebook permissions<br>
+6. Scheduling aur publishing status</p>
+</div>
+</main>
+
+<footer>AI Creator Studio · Version 1.0 · Dashboard Preview</footer>
+
+<script>
+function makeSEO(){
+ const topic=document.getElementById('topic').value.trim();
+ const lang=document.getElementById('lang').value;
+ if(!topic){alert('Pehle video ka topic likho.');return;}
+ let title=topic.length>65?topic.slice(0,62)+'...':topic;
+ let tags=topic.toLowerCase().replace(/[^a-z0-9 ]/g,'').split(/\s+/).filter(Boolean).slice(0,5);
+ let hashtags=tags.map(t=>'#'+t).join(' ');
+ let output='TITLE:\n'+title+
+ '\n\nDESCRIPTION:\n'+topic+
+ '\n\nIs video mein hum '+topic+' ke baare mein jaanenge. Video pasand aaye to Like, Share aur Subscribe karein.\n\n'+
+ 'TAGS:\n'+tags.join(', ')+
+ '\n\nHASHTAGS:\n'+hashtags+
+ '\n\nNOTE: Ye basic draft hai. Publish karne se pehle details check karein.';
+ document.getElementById('result').textContent=output;
+}
+function copySEO(){
+ const text=document.getElementById('result').textContent;
+ if(!text){alert('Pehle SEO generate karo.');return;}
+ if(navigator.clipboard && navigator.clipboard.writeText){
+  navigator.clipboard.writeText(text).then(()=>alert('SEO details copied!')).catch(()=>fallbackCopy(text));
+ }else{fallbackCopy(text);}
+}
+function fallbackCopy(text){
+ const area=document.createElement('textarea');
+ area.value=text;document.body.appendChild(area);area.select();
+ document.execCommand('copy');area.remove();alert('Copy karne ki koshish ki gayi. Agar copy na ho to text select karein.');
+}
+function previewThumb(){
+ const file=document.getElementById('thumb').files[0];
+ if(!file)return;
+ const img=document.getElementById('preview');
+ img.src=URL.createObjectURL(file);img.style.display='block';
+}
+function savePlan(){
+ const platforms=[];
+ if(document.getElementById('yt').checked)platforms.push('YouTube');
+ if(document.getElementById('ig').checked)platforms.push('Instagram');
+ if(document.getElementById('fb').checked)platforms.push('Facebook');
+ if(!platforms.length){alert('Kam se kam ek platform select karo.');return;}
+ const kind=document.getElementById('kind').value;
+ const time=document.getElementById('schedule').value||'Abhi set nahi kiya';
+ document.getElementById('planResult').textContent=
+ 'Plan preview saved on screen:\nPlatforms: '+platforms.join(', ')+
+ '\nContent: '+kind+'\nTime: '+time+
+ '\n\nNote: Ye plan server par save ya publish nahi hua hai.';
+}
+</script>
+</body>
+  </html>
