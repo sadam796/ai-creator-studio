@@ -2,155 +2,295 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>AI Creator Studio</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Creator Auto Publisher</title>
+
 <style>
 *{box-sizing:border-box}
-body{margin:0;font-family:Arial,sans-serif;background:#0b1020;color:#fff}
-header{padding:22px 16px;background:#151c32;text-align:center}
-header h1{margin:0;color:#7c9cff;font-size:26px}
-header p{color:#c4cbe0;font-size:13px}
-main{max-width:650px;margin:auto;padding:16px}
-.card{background:#151c32;padding:18px;margin:15px 0;border-radius:14px;border:1px solid #293452}
-h2{font-size:18px;margin-top:0;color:#9eb5ff}
-label{display:block;margin:12px 0 7px;font-size:14px}
-input,textarea,select{width:100%;padding:12px;border-radius:8px;border:1px solid #394765;background:#0b1020;color:white}
+body{margin:0;background:#0b1020;color:#fff;font-family:Arial,sans-serif}
+header{background:#151c32;padding:22px 16px;text-align:center;border-bottom:1px solid #293452}
+header h1{margin:0;color:#8da7ff;font-size:25px}
+header p{color:#bbc5df;font-size:13px}
+main{max-width:720px;margin:auto;padding:14px}
+.card{background:#151c32;border:1px solid #293452;padding:17px;margin:15px 0;border-radius:15px}
+h2{font-size:18px;color:#9eb5ff;margin-top:0}
+label{display:block;font-size:14px;margin:13px 0 7px}
+input:not([type=checkbox]):not([type=file]),textarea,select{
+width:100%;padding:12px;background:#0b1020;color:white;border:1px solid #394765;border-radius:9px;font-size:15px
+}
+input[type=file]{display:block;width:100%;margin:10px 0}
 textarea{min-height:90px;resize:vertical}
-button{width:100%;padding:13px;margin-top:12px;border:0;border-radius:9px;background:#536dfe;color:white;font-weight:bold;font-size:15px}
+button{width:100%;padding:13px;border:0;border-radius:9px;background:#536dfe;color:white;font-size:15px;font-weight:bold;margin-top:12px}
 button.secondary{background:#263653}
-.checks{display:flex;gap:15px;flex-wrap:wrap}
-.checks label{display:flex;align-items:center;gap:6px}
-.checks input{width:auto}
+button.danger{background:#9e354b}
+.checks{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.checks label{display:flex;align-items:center;gap:9px;background:#0b1020;border:1px solid #394765;padding:12px;border-radius:9px;margin:0}
+.checks input{width:18px;height:18px}
 .note{font-size:12px;color:#aeb8d0;line-height:1.6}
-#result{white-space:pre-wrap;line-height:1.6;font-size:14px}
+.preview{display:none;width:100%;max-height:300px;object-fit:contain;margin-top:10px;border-radius:10px}
+.item{background:#0b1020;border:1px solid #394765;border-radius:10px;padding:13px;margin-top:12px;overflow-wrap:anywhere}
+.item h3{font-size:15px;color:#9eb5ff;margin:0 0 8px}
+.badge{display:inline-block;background:#263653;border-radius:5px;padding:5px 8px;font-size:12px;margin:3px}
+.status{color:#73e6a6}
 footer{text-align:center;padding:25px;color:#9aa6c3;font-size:12px}
 </style>
 </head>
+
 <body>
 <header>
-<h1>🚀 AI Creator Studio</h1>
-<p>Your YouTube, Shorts & Social Media Workspace</p>
+<h1>🚀 Creator Auto Publisher</h1>
+<p>One dashboard for your social media</p>
+<p class="status">● Dashboard Ready</p>
 </header>
 
 <main>
+
 <div class="card">
-<h2>🎬 1. Select Your Video</h2>
-<label>Choose video from your mobile</label>
-<input type="file" id="video" accept="video/*">
-<p class="note">Video sirf select hoga. Abhi automatic upload ya editing connected nahi hai.</p>
+<h2>🎬 1. Upload Video</h2>
+<label>Select video from mobile</label>
+<input id="video" type="file" accept="video/*">
+<div id="videoInfo" class="note">No video selected.</div>
+<p class="note">Abhi video browser mein select hota hai. Server par upload aur automatic publishing baad mein connect karenge.</p>
 </div>
 
 <div class="card">
-<h2>🧠 2. Roman Hindi SEO Generator</h2>
-<label>Video ka topic ya short summary likho</label>
-<textarea id="topic" placeholder="Example: 5 best free AI tools jo mobile par chalte hain"></textarea>
-<label>Video language</label>
-<select id="lang">
-<option>Roman Hindi</option>
-<option>Hindi</option>
-<option>English</option>
-</select>
-<button onclick="makeSEO()">✨ Generate SEO Details</button>
-<div id="result"></div>
-<button class="secondary" onclick="copySEO()">📋 Copy SEO Details</button>
+<h2>📝 2. Video Details</h2>
+
+<label>Video title</label>
+<input id="title" maxlength="100" placeholder="Apne video ka title likho">
+
+<label>Description</label>
+<textarea id="description" placeholder="Video ki details likho..."></textarea>
+
+<label>Tags (comma separated)</label>
+<input id="tags" placeholder="AI tools, technology, tips">
+
+<label>Hashtags</label>
+<input id="hashtags" placeholder="#AI #YouTube #Shorts">
+
+<label>Thumbnail image</label>
+<input id="thumbnail" type="file" accept="image/*">
+<img id="thumbPreview" class="preview" alt="Thumbnail preview">
 </div>
 
 <div class="card">
-<h2>🎨 3. YouTube Thumbnail</h2>
-<label>Select thumbnail image</label>
-<input type="file" id="thumb" accept="image/*" onchange="previewThumb()">
-<img id="preview" style="display:none;width:100%;margin-top:12px;border-radius:8px" alt="Thumbnail preview">
-<p class="note">Yahan image preview hoga. Automatic AI thumbnail design abhi connected nahi hai.</p>
-</div>
+<h2>📱 3. Select Platforms</h2>
+<p class="note">Jin platforms par post plan karna hai, unhe ON karo.</p>
 
-<div class="card">
-<h2>📱 4. Select Publishing Platforms</h2>
 <div class="checks">
-<label><input type="checkbox" id="yt" checked> YouTube</label>
-<label><input type="checkbox" id="ig"> Instagram</label>
-<label><input type="checkbox" id="fb"> Facebook</label>
+<label><input type="checkbox" id="youtube" checked> YouTube</label>
+<label><input type="checkbox" id="instagram"> Instagram</label>
+<label><input type="checkbox" id="facebook"> Facebook</label>
+<label><input type="checkbox" id="telegram"> Telegram</label>
 </div>
+
 <label>Content type</label>
-<select id="kind">
-<option>Full YouTube Video</option>
+<select id="contentType">
+<option>YouTube Full Video</option>
 <option>YouTube Short</option>
 <option>Instagram Reel</option>
 <option>Facebook Reel</option>
-<option>Image Post</option>
+<option>Telegram Video</option>
+<option>Multiple Platforms</option>
 </select>
-<label>Publishing date and time</label>
-<input type="datetime-local" id="schedule">
-<p class="note">Ye selection planner hai. Real publishing ke liye secure server aur official API connection chahiye.</p>
-<button onclick="savePlan()">💾 Save Publishing Plan</button>
-<div id="planResult" class="note"></div>
+
+<label>Publishing date</label>
+<input type="date" id="publishDate">
+
+<label>Publishing time</label>
+<input type="time" id="publishTime">
+
+<p class="note">Date aur time tumhare phone ke local time ke mutabik select honge.</p>
+<button id="saveButton">💾 Save Publishing Plan</button>
+<div id="message" class="note" role="status"></div>
 </div>
 
 <div class="card">
-<h2>✂️ 5. Shorts Workflow</h2>
-<p class="note">Long video se Shorts banane ke liye video processing, interesting moments selection, vertical cropping aur subtitles ka feature baad mein connect karenge.</p>
-<button class="secondary" onclick="alert('Shorts processing abhi setup nahi hui hai.')">Open Shorts Workflow</button>
+<h2>📅 4. Publishing Calendar / Plans</h2>
+<p class="note">Is browser mein save kiye gaye plans yahan dikhenge.</p>
+<div id="plans"><p class="note">Abhi koi plan save nahi hai.</p></div>
+<button class="secondary" id="refreshButton">🔄 Refresh Plans</button>
 </div>
 
 <div class="card">
-<h2>📊 6. Next Automation Steps</h2>
-<p class="note">1. YouTube account authorization<br>
-2. Secure video upload backend<br>
-3. Thumbnail upload integration<br>
-4. Shorts video processing<br>
-5. Instagram aur Facebook permissions<br>
-6. Scheduling aur publishing status</p>
+<h2>🔐 5. Account Connections</h2>
+<p class="note">
+YouTube: Official account authorization required.<br>
+Instagram: Supported professional account and permissions required.<br>
+Facebook: Page authorization and permissions required.<br>
+Telegram: Bot token and destination chat setup required.
+</p>
+<p class="note">Abhi koi social account connected nahi hai. Password ya secret token is dashboard ke form mein mat daalna.</p>
 </div>
+
+<div class="card">
+<h2>⚙️ 6. Automation Status</h2>
+<p class="status">Dashboard: Ready</p>
+<p id="serverStatus">Publishing server: Not checked</p>
+<p class="note">
+Automatic publishing abhi active nahi hai. Iske liye secure server-side storage, platform APIs, authorization aur background scheduler banana baaki hai. Sirf browser mein plan save karne se video publish nahi hota.
+</p>
+<button class="secondary" id="checkServer">Check Server</button>
+</div>
+
 </main>
 
-<footer>AI Creator Studio · Version 1.0 · Dashboard Preview</footer>
+<footer>Creator Auto Publisher · Mobile Dashboard</footer>
 
 <script>
-function makeSEO(){
- const topic=document.getElementById('topic').value.trim();
- const lang=document.getElementById('lang').value;
- if(!topic){alert('Pehle video ka topic likho.');return;}
- let title=topic.length>65?topic.slice(0,62)+'...':topic;
- let tags=topic.toLowerCase().replace(/[^a-z0-9 ]/g,'').split(/\s+/).filter(Boolean).slice(0,5);
- let hashtags=tags.map(t=>'#'+t).join(' ');
- let output='TITLE:\n'+title+
- '\n\nDESCRIPTION:\n'+topic+
- '\n\nIs video mein hum '+topic+' ke baare mein jaanenge. Video pasand aaye to Like, Share aur Subscribe karein.\n\n'+
- 'TAGS:\n'+tags.join(', ')+
- '\n\nHASHTAGS:\n'+hashtags+
- '\n\nNOTE: Ye basic draft hai. Publish karne se pehle details check karein.';
- document.getElementById('result').textContent=output;
+const $ = id => document.getElementById(id);
+const STORAGE_KEY = "creator_auto_publisher_plans_v1";
+
+$("video").addEventListener("change", function(){
+  const file = this.files[0];
+  $("videoInfo").textContent = file
+    ? "Selected: " + file.name + " (" + (file.size / 1024 / 1024).toFixed(2) + " MB)"
+    : "No video selected.";
+});
+
+$("thumbnail").addEventListener("change", function(){
+  const file = this.files[0];
+  const img = $("thumbPreview");
+  if(!file){
+    img.style.display = "none";
+    img.removeAttribute("src");
+    return;
+  }
+  img.src = URL.createObjectURL(file);
+  img.style.display = "block";
+});
+
+function readPlans(){
+  try {
+    const data = JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]");
+    return Array.isArray(data) ? data : [];
+  } catch {
+    return [];
+  }
 }
-function copySEO(){
- const text=document.getElementById('result').textContent;
- if(!text){alert('Pehle SEO generate karo.');return;}
- if(navigator.clipboard && navigator.clipboard.writeText){
-  navigator.clipboard.writeText(text).then(()=>alert('SEO details copied!')).catch(()=>fallbackCopy(text));
- }else{fallbackCopy(text);}
+
+function renderPlans(){
+  const plans = readPlans();
+  const box = $("plans");
+  box.replaceChildren();
+
+  if(!plans.length){
+    const p = document.createElement("p");
+    p.className = "note";
+    p.textContent = "Abhi koi plan save nahi hai.";
+    box.appendChild(p);
+    return;
+  }
+
+  plans.sort((a,b) => (a.dateTime || "").localeCompare(b.dateTime || ""));
+
+  plans.forEach(plan => {
+    const item = document.createElement("div");
+    item.className = "item";
+
+    const title = document.createElement("h3");
+    title.textContent = plan.title || "Untitled video";
+    item.appendChild(title);
+
+    const details = document.createElement("p");
+    details.className = "note";
+    details.textContent = "Schedule: " + plan.dateTime.replace("T"," ") +
+      "\nPlatforms: " + plan.platforms.join(", ") +
+      "\nType: " + plan.contentType;
+    item.appendChild(details);
+
+    const badge = document.createElement("span");
+    badge.className = "badge";
+    badge.textContent = "Saved locally — not published";
+    item.appendChild(badge);
+
+    const del = document.createElement("button");
+    del.className = "danger";
+    del.textContent = "Delete Plan";
+    del.addEventListener("click", () => {
+      const updated = readPlans().filter(p => p.id !== plan.id);
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
+      renderPlans();
+    });
+    item.appendChild(del);
+
+    box.appendChild(item);
+  });
 }
-function fallbackCopy(text){
- const area=document.createElement('textarea');
- area.value=text;document.body.appendChild(area);area.select();
- document.execCommand('copy');area.remove();alert('Copy karne ki koshish ki gayi. Agar copy na ho to text select karein.');
-}
-function previewThumb(){
- const file=document.getElementById('thumb').files[0];
- if(!file)return;
- const img=document.getElementById('preview');
- img.src=URL.createObjectURL(file);img.style.display='block';
-}
-function savePlan(){
- const platforms=[];
- if(document.getElementById('yt').checked)platforms.push('YouTube');
- if(document.getElementById('ig').checked)platforms.push('Instagram');
- if(document.getElementById('fb').checked)platforms.push('Facebook');
- if(!platforms.length){alert('Kam se kam ek platform select karo.');return;}
- const kind=document.getElementById('kind').value;
- const time=document.getElementById('schedule').value||'Abhi set nahi kiya';
- document.getElementById('planResult').textContent=
- 'Plan preview saved on screen:\nPlatforms: '+platforms.join(', ')+
- '\nContent: '+kind+'\nTime: '+time+
- '\n\nNote: Ye plan server par save ya publish nahi hua hai.';
-}
+
+$("saveButton").addEventListener("click", function(){
+  const title = $("title").value.trim();
+  const date = $("publishDate").value;
+  const time = $("publishTime").value;
+
+  const platforms = [];
+  if($("youtube").checked) platforms.push("YouTube");
+  if($("instagram").checked) platforms.push("Instagram");
+  if($("facebook").checked) platforms.push("Facebook");
+  if($("telegram").checked) platforms.push("Telegram");
+
+  if(!title){
+    $("message").textContent = "Pehle video title likho.";
+    return;
+  }
+
+  if(!date || !time){
+    $("message").textContent = "Publishing date aur time select karo.";
+    return;
+  }
+
+  if(!platforms.length){
+    $("message").textContent = "Kam se kam ek platform select karo.";
+    return;
+  }
+
+  const dateTime = date + "T" + time;
+  const plan = {
+    id: Date.now().toString(),
+    title,
+    description: $("description").value.trim(),
+    tags: $("tags").value.trim(),
+    hashtags: $("hashtags").value.trim(),
+    platforms,
+    contentType: $("contentType").value,
+    dateTime,
+    createdAt: new Date().toISOString(),
+    videoFileName: $("video").files[0]?.name || "",
+    thumbnailFileName: $("thumbnail").files[0]?.name || ""
+  };
+
+  const plans = readPlans();
+  plans.push(plan);
+
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(plans));
+    $("message").textContent =
+      "Plan browser mein save ho gaya. Yaad rahe: video file upload ya automatic publishing nahi hui.";
+    renderPlans();
+  } catch {
+    $("message").textContent =
+      "Plan save nahi ho saka. Browser storage available hai ya nahi check karo.";
+  }
+});
+
+$("refreshButton").addEventListener("click", renderPlans);
+
+$("checkServer").addEventListener("click", async function(){
+  $("serverStatus").textContent = "Publishing server: Checking...";
+  try {
+    const response = await fetch("/api/health");
+    if(!response.ok) throw new Error("Server check failed");
+    const data = await response.json();
+    $("serverStatus").textContent =
+      "Backend server: " + (data.status || "Responding") +
+      ". Automatic publishing is not configured yet.";
+  } catch {
+    $("serverStatus").textContent =
+      "Backend server status could not be checked.";
+  }
+});
+
+renderPlans();
 </script>
 </body>
-  </html>
+</html>
