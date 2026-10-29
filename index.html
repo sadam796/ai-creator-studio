@@ -4,38 +4,35 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Creator Auto Publisher</title>
-
 <style>
 *{box-sizing:border-box}
 body{margin:0;background:#0b1020;color:#fff;font-family:Arial,sans-serif}
-header{background:#151c32;padding:22px 16px;text-align:center;border-bottom:1px solid #293452}
-header h1{margin:0;color:#8da7ff;font-size:25px}
+header{padding:22px 16px;background:#151c32;text-align:center}
+header h1{color:#8da7ff;margin:0;font-size:25px}
 header p{color:#bbc5df;font-size:13px}
 main{max-width:720px;margin:auto;padding:14px}
 .card{background:#151c32;border:1px solid #293452;padding:17px;margin:15px 0;border-radius:15px}
 h2{font-size:18px;color:#9eb5ff;margin-top:0}
 label{display:block;font-size:14px;margin:13px 0 7px}
-input:not([type=checkbox]):not([type=file]),textarea,select{
-width:100%;padding:12px;background:#0b1020;color:white;border:1px solid #394765;border-radius:9px;font-size:15px
-}
-input[type=file]{display:block;width:100%;margin:10px 0}
+input:not([type=checkbox]),textarea,select{width:100%;padding:12px;background:#0b1020;color:white;border:1px solid #394765;border-radius:9px;font-size:15px}
+input[type=file]{padding:8px}
 textarea{min-height:90px;resize:vertical}
 button{width:100%;padding:13px;border:0;border-radius:9px;background:#536dfe;color:white;font-size:15px;font-weight:bold;margin-top:12px}
 button.secondary{background:#263653}
 button.danger{background:#9e354b}
+button:disabled{opacity:.5}
 .checks{display:grid;grid-template-columns:1fr 1fr;gap:10px}
-.checks label{display:flex;align-items:center;gap:9px;background:#0b1020;border:1px solid #394765;padding:12px;border-radius:9px;margin:0}
+.checks label{display:flex;align-items:center;gap:8px;background:#0b1020;border:1px solid #394765;padding:12px;border-radius:9px;margin:0}
 .checks input{width:18px;height:18px}
-.note{font-size:12px;color:#aeb8d0;line-height:1.6}
-.preview{display:none;width:100%;max-height:300px;object-fit:contain;margin-top:10px;border-radius:10px}
-.item{background:#0b1020;border:1px solid #394765;border-radius:10px;padding:13px;margin-top:12px;overflow-wrap:anywhere}
-.item h3{font-size:15px;color:#9eb5ff;margin:0 0 8px}
-.badge{display:inline-block;background:#263653;border-radius:5px;padding:5px 8px;font-size:12px;margin:3px}
+.note{font-size:12px;color:#aeb8d0;line-height:1.6;white-space:pre-wrap}
 .status{color:#73e6a6}
+.preview{display:none;width:100%;max-height:280px;object-fit:contain;margin-top:10px}
+.item{background:#0b1020;border:1px solid #394765;border-radius:10px;padding:13px;margin-top:12px;overflow-wrap:anywhere}
+.item h3{font-size:15px;color:#9eb5ff}
+.badge{display:inline-block;background:#263653;border-radius:5px;padding:5px 8px;font-size:12px}
 footer{text-align:center;padding:25px;color:#9aa6c3;font-size:12px}
 </style>
 </head>
-
 <body>
 <header>
 <h1>🚀 Creator Auto Publisher</h1>
@@ -44,46 +41,37 @@ footer{text-align:center;padding:25px;color:#9aa6c3;font-size:12px}
 </header>
 
 <main>
-
 <div class="card">
 <h2>🎬 1. Upload Video</h2>
 <label>Select video from mobile</label>
 <input id="video" type="file" accept="video/*">
 <div id="videoInfo" class="note">No video selected.</div>
-<p class="note">Abhi video browser mein select hota hai. Server par upload aur automatic publishing baad mein connect karenge.</p>
+<label>Thumbnail image</label>
+<input id="thumbnail" type="file" accept="image/*">
+<img id="thumbPreview" class="preview" alt="Thumbnail preview">
+<p class="note">Video aur thumbnail server par upload honge jab tum Save Publishing Plan dabaaoge. Maximum file size backend ke mutabik 100 MB hai.</p>
 </div>
 
 <div class="card">
 <h2>📝 2. Video Details</h2>
-
 <label>Video title</label>
-<input id="title" maxlength="100" placeholder="Apne video ka title likho">
-
+<input id="title" maxlength="200" placeholder="Apne video ka title likho">
 <label>Description</label>
 <textarea id="description" placeholder="Video ki details likho..."></textarea>
-
 <label>Tags (comma separated)</label>
 <input id="tags" placeholder="AI tools, technology, tips">
-
 <label>Hashtags</label>
 <input id="hashtags" placeholder="#AI #YouTube #Shorts">
-
-<label>Thumbnail image</label>
-<input id="thumbnail" type="file" accept="image/*">
-<img id="thumbPreview" class="preview" alt="Thumbnail preview">
 </div>
 
 <div class="card">
 <h2>📱 3. Select Platforms</h2>
-<p class="note">Jin platforms par post plan karna hai, unhe ON karo.</p>
-
 <div class="checks">
 <label><input type="checkbox" id="youtube" checked> YouTube</label>
 <label><input type="checkbox" id="instagram"> Instagram</label>
 <label><input type="checkbox" id="facebook"> Facebook</label>
 <label><input type="checkbox" id="telegram"> Telegram</label>
 </div>
-
 <label>Content type</label>
 <select id="contentType">
 <option>YouTube Full Video</option>
@@ -93,204 +81,229 @@ footer{text-align:center;padding:25px;color:#9aa6c3;font-size:12px}
 <option>Telegram Video</option>
 <option>Multiple Platforms</option>
 </select>
-
 <label>Publishing date</label>
 <input type="date" id="publishDate">
-
 <label>Publishing time</label>
 <input type="time" id="publishTime">
-
-<p class="note">Date aur time tumhare phone ke local time ke mutabik select honge.</p>
-<button id="saveButton">💾 Save Publishing Plan</button>
+<button id="saveButton">💾 Upload & Save Publishing Plan</button>
 <div id="message" class="note" role="status"></div>
 </div>
 
 <div class="card">
-<h2>📅 4. Publishing Calendar / Plans</h2>
-<p class="note">Is browser mein save kiye gaye plans yahan dikhenge.</p>
-<div id="plans"><p class="note">Abhi koi plan save nahi hai.</p></div>
-<button class="secondary" id="refreshButton">🔄 Refresh Plans</button>
+<h2>📅 4. Publishing Plans</h2>
+<p class="note">Yeh list server se saved plans load karti hai.</p>
+<button class="secondary" id="refreshButton">🔄 Load Plans</button>
+<div id="plans"><p class="note">Plans load ho rahe hain...</p></div>
 </div>
 
 <div class="card">
-<h2>🔐 5. Account Connections</h2>
-<p class="note">
-YouTube: Official account authorization required.<br>
-Instagram: Supported professional account and permissions required.<br>
-Facebook: Page authorization and permissions required.<br>
-Telegram: Bot token and destination chat setup required.
-</p>
-<p class="note">Abhi koi social account connected nahi hai. Password ya secret token is dashboard ke form mein mat daalna.</p>
-</div>
-
-<div class="card">
-<h2>⚙️ 6. Automation Status</h2>
-<p class="status">Dashboard: Ready</p>
-<p id="serverStatus">Publishing server: Not checked</p>
-<p class="note">
-Automatic publishing abhi active nahi hai. Iske liye secure server-side storage, platform APIs, authorization aur background scheduler banana baaki hai. Sirf browser mein plan save karne se video publish nahi hota.
-</p>
+<h2>⚙️ 5. Server Status</h2>
+<p id="serverStatus" class="note">Server check nahi hua.</p>
 <button class="secondary" id="checkServer">Check Server</button>
+<p class="note">Automatic publishing abhi active nahi hai. Iske liye background scheduler aur YouTube, Instagram, Facebook ki official API authorization abhi connect karni baaki hai. Telegram connection bhi baad mein kiya ja sakta hai.</p>
 </div>
-
 </main>
 
 <footer>Creator Auto Publisher · Mobile Dashboard</footer>
 
 <script>
 const $ = id => document.getElementById(id);
-const STORAGE_KEY = "creator_auto_publisher_plans_v1";
 
 $("video").addEventListener("change", function(){
-  const file = this.files[0];
-  $("videoInfo").textContent = file
-    ? "Selected: " + file.name + " (" + (file.size / 1024 / 1024).toFixed(2) + " MB)"
+  const f = this.files[0];
+  $("videoInfo").textContent = f
+    ? "Selected: " + f.name + " (" + (f.size / 1024 / 1024).toFixed(2) + " MB)"
     : "No video selected.";
 });
 
 $("thumbnail").addEventListener("change", function(){
-  const file = this.files[0];
+  const f = this.files[0];
   const img = $("thumbPreview");
-  if(!file){
+  if (!f) {
     img.style.display = "none";
     img.removeAttribute("src");
     return;
   }
-  img.src = URL.createObjectURL(file);
+  img.src = URL.createObjectURL(f);
   img.style.display = "block";
 });
 
-function readPlans(){
+async function checkServer(){
+  $("serverStatus").textContent = "Checking server...";
   try {
-    const data = JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]");
-    return Array.isArray(data) ? data : [];
-  } catch {
-    return [];
+    const r = await fetch("/api/health");
+    if (!r.ok) throw new Error("Server response error");
+    const d = await r.json();
+    $("serverStatus").textContent =
+      "Backend: " + d.status +
+      "\nUpload API: " + (d.uploads || "Check required") +
+      "\nScheduling: " + (d.scheduling || "Check required") +
+      "\nAutomatic publishing: " + (d.automaticPublishing || "Not confirmed");
+  } catch (e) {
+    $("serverStatus").textContent =
+      "Server check failed. Refresh the website and try again.";
   }
 }
 
-function renderPlans(){
-  const plans = readPlans();
-  const box = $("plans");
-  box.replaceChildren();
+async function loadPlans(){
+  $("plans").textContent = "Loading plans...";
+  try {
+    const r = await fetch("/api/plans");
+    if (!r.ok) throw new Error("Unable to load plans");
+    const d = await r.json();
+    const plans = d.plans || [];
+    const box = $("plans");
+    box.replaceChildren();
 
-  if(!plans.length){
-    const p = document.createElement("p");
-    p.className = "note";
-    p.textContent = "Abhi koi plan save nahi hai.";
-    box.appendChild(p);
-    return;
-  }
+    if (!plans.length) {
+      box.textContent = "Abhi server par koi plan saved nahi hai.";
+      return;
+    }
 
-  plans.sort((a,b) => (a.dateTime || "").localeCompare(b.dateTime || ""));
+    plans.sort((a,b) => (a.dateTime || "").localeCompare(b.dateTime || ""));
 
-  plans.forEach(plan => {
-    const item = document.createElement("div");
-    item.className = "item";
+    plans.forEach(p => {
+      const item = document.createElement("div");
+      item.className = "item";
 
-    const title = document.createElement("h3");
-    title.textContent = plan.title || "Untitled video";
-    item.appendChild(title);
+      const h = document.createElement("h3");
+      h.textContent = p.title || "Untitled video";
+      item.appendChild(h);
 
-    const details = document.createElement("p");
-    details.className = "note";
-    details.textContent = "Schedule: " + plan.dateTime.replace("T"," ") +
-      "\nPlatforms: " + plan.platforms.join(", ") +
-      "\nType: " + plan.contentType;
-    item.appendChild(details);
+      const details = document.createElement("p");
+      details.className = "note";
+      details.textContent =
+        "Date/time: " + (p.dateTime || "") +
+        "\nPlatforms: " + (p.platforms || []).join(", ") +
+        "\nContent: " + (p.contentType || "") +
+        "\nStatus: " + (p.status || "saved") +
+        "\nVideo file: " + (p.videoFileName || "Not uploaded") +
+        "\nThumbnail: " + (p.thumbnailFileName || "Not uploaded");
+      item.appendChild(details);
 
-    const badge = document.createElement("span");
-    badge.className = "badge";
-    badge.textContent = "Saved locally — not published";
-    item.appendChild(badge);
-
-    const del = document.createElement("button");
-    del.className = "danger";
-    del.textContent = "Delete Plan";
-    del.addEventListener("click", () => {
-      const updated = readPlans().filter(p => p.id !== plan.id);
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
-      renderPlans();
+      const badge = document.createElement("span");
+      badge.className = "badge";
+      badge.textContent = "Saved — not yet published";
+      item.appendChild(badge);
+      box.appendChild(item);
     });
-    item.appendChild(del);
-
-    box.appendChild(item);
-  });
+  } catch (e) {
+    $("plans").textContent =
+      "Plans load nahi hue. Backend deployment aur /api/plans endpoint check karo.";
+  }
 }
 
-$("saveButton").addEventListener("click", function(){
+$("saveButton").addEventListener("click", async function(){
+  const btn = this;
   const title = $("title").value.trim();
   const date = $("publishDate").value;
   const time = $("publishTime").value;
 
   const platforms = [];
-  if($("youtube").checked) platforms.push("YouTube");
-  if($("instagram").checked) platforms.push("Instagram");
-  if($("facebook").checked) platforms.push("Facebook");
-  if($("telegram").checked) platforms.push("Telegram");
+  if ($("youtube").checked) platforms.push("YouTube");
+  if ($("instagram").checked) platforms.push("Instagram");
+  if ($("facebook").checked) platforms.push("Facebook");
+  if ($("telegram").checked) platforms.push("Telegram");
 
-  if(!title){
+  if (!title) {
     $("message").textContent = "Pehle video title likho.";
     return;
   }
-
-  if(!date || !time){
+  if (!date || !time) {
     $("message").textContent = "Publishing date aur time select karo.";
     return;
   }
-
-  if(!platforms.length){
+  if (!platforms.length) {
     $("message").textContent = "Kam se kam ek platform select karo.";
     return;
   }
 
   const dateTime = date + "T" + time;
-  const plan = {
-    id: Date.now().toString(),
-    title,
-    description: $("description").value.trim(),
-    tags: $("tags").value.trim(),
-    hashtags: $("hashtags").value.trim(),
-    platforms,
-    contentType: $("contentType").value,
-    dateTime,
-    createdAt: new Date().toISOString(),
-    videoFileName: $("video").files[0]?.name || "",
-    thumbnailFileName: $("thumbnail").files[0]?.name || ""
-  };
+  if (Date.parse(dateTime) <= Date.now()) {
+    $("message").textContent = "Future ki date aur time select karo.";
+    return;
+  }
 
-  const plans = readPlans();
-  plans.push(plan);
+  const video = $("video").files[0];
+  const thumbnail = $("thumbnail").files[0];
+
+  if (!video && !thumbnail) {
+    $("message").textContent =
+      "Pehle video ya thumbnail select karo. Agar sirf plan save karna hai, ek image thumbnail bhi select kar sakte ho.";
+    return;
+  }
+
+  if (video && video.size > 100 * 1024 * 1024) {
+    $("message").textContent = "Video 100 MB se chhota hona chahiye.";
+    return;
+  }
+  if (thumbnail && thumbnail.size > 100 * 1024 * 1024) {
+    $("message").textContent = "Thumbnail 100 MB se chhota hona chahiye.";
+    return;
+  }
+
+  btn.disabled = true;
+  $("message").textContent = "Upload shuru ho raha hai... Page band mat karo.";
 
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(plans));
+    const form = new FormData();
+    if (video) form.append("video", video);
+    if (thumbnail) form.append("thumbnail", thumbnail);
+
+    const uploadResponse = await fetch("/api/upload", {
+      method: "POST",
+      body: form
+    });
+
+    const uploadData = await uploadResponse.json();
+    if (!uploadResponse.ok) {
+      throw new Error(uploadData.error || "Upload failed");
+    }
+
+    const videoFileName = uploadData.video?.fileName || "";
+    const thumbnailFileName = uploadData.thumbnail?.fileName || "";
+
+    $("message").textContent = "Files uploaded. Publishing plan save ho raha hai...";
+
+    const planResponse = await fetch("/api/plans", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({
+        title,
+        description: $("description").value.trim(),
+        tags: $("tags").value.trim(),
+        hashtags: $("hashtags").value.trim(),
+        platforms,
+        contentType: $("contentType").value,
+        dateTime,
+        videoFileName,
+        thumbnailFileName
+      })
+    });
+
+    const planData = await planResponse.json();
+    if (!planResponse.ok) {
+      throw new Error(planData.error || "Plan save failed");
+    }
+
     $("message").textContent =
-      "Plan browser mein save ho gaya. Yaad rahe: video file upload ya automatic publishing nahi hui.";
-    renderPlans();
-  } catch {
+      "Success! Files upload aur plan server par save ho gaye.\n" +
+      "Lekin video automatically publish nahi hua hai.";
+    await loadPlans();
+  } catch (e) {
     $("message").textContent =
-      "Plan save nahi ho saka. Browser storage available hai ya nahi check karo.";
+      "Error: " + e.message +
+      "\nHostinger deployment complete hai ya nahi check karo. Upload ke baad plan save fail hua ho to files server par reh sakti hain.";
+  } finally {
+    btn.disabled = false;
   }
 });
 
-$("refreshButton").addEventListener("click", renderPlans);
+$("refreshButton").addEventListener("click", loadPlans);
+$("checkServer").addEventListener("click", checkServer);
 
-$("checkServer").addEventListener("click", async function(){
-  $("serverStatus").textContent = "Publishing server: Checking...";
-  try {
-    const response = await fetch("/api/health");
-    if(!response.ok) throw new Error("Server check failed");
-    const data = await response.json();
-    $("serverStatus").textContent =
-      "Backend server: " + (data.status || "Responding") +
-      ". Automatic publishing is not configured yet.";
-  } catch {
-    $("serverStatus").textContent =
-      "Backend server status could not be checked.";
-  }
-});
-
-renderPlans();
+checkServer();
+loadPlans();
 </script>
 </body>
 </html>
