@@ -40,7 +40,6 @@ function adminAuth(req, res, next) {
   }
 
   let credentials;
-
   try {
     credentials = Buffer.from(match[1], "base64").toString("utf8");
   } catch {
@@ -48,10 +47,7 @@ function adminAuth(req, res, next) {
   }
 
   const separator = credentials.indexOf(":");
-  const password = separator >= 0
-    ? credentials.slice(separator + 1)
-    : "";
-
+  const password = separator >= 0 ? credentials.slice(separator + 1) : "";
   const a = Buffer.from(password);
   const b = Buffer.from(ADMIN_PASSWORD);
 
@@ -63,7 +59,7 @@ function adminAuth(req, res, next) {
   next();
 }
 
-// PUBLIC HEALTH AND OAUTH CALLBACK
+// PUBLIC ROUTES
 app.use((req, res, next) => {
   if (
     req.path === "/api/health" ||
@@ -71,35 +67,9 @@ app.use((req, res, next) => {
   ) {
     return next();
   }
-
   adminAuth(req, res, next);
 });
 
-// BLOCK PRIVATE FILES
-app.use((req, res, next) => {
-  const p = req.path;
-
-  if (
-    p === "/data" || p.startsWith("/data/") ||
-    p === "/uploads" || p.startsWith("/uploads/") ||
-    p === "/server.js" ||
-    p === "/package.json" ||
-    p === "/.env" ||
-    p.startsWith("/.git/")
-  ) {
-    return res.sendStatus(404);
-  }
-
-  next();
-});
-
-// SAFE STATIC FILES
-app.use(express.static(__dirname, {
-  dotfiles: "deny",
-  index: false
-}));
-
-// GOOGLE OAUTH SETTINGS
 const CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
 const CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
 
@@ -109,7 +79,6 @@ const BASE_URL =
 
 const REDIRECT_URI = BASE_URL + "/auth/youtube/callback";
 
-// JSON FUNCTIONS
 function readJSON(file, fallback) {
   try {
     return JSON.parse(fs.readFileSync(file, "utf8"));
@@ -148,12 +117,15 @@ function saveTokens(tokens) {
   });
 }
 
-// OAUTH FUNCTIONS
 function oauthConfigured() {
   return Boolean(CLIENT_ID && CLIENT_SECRET);
 }
 
 function getOAuthClient() {
+  if (!oauthConfigured()) {
+    throw new Error("Google OAuth is not configured.");
+  }
+
   const oauth = new google.auth.OAuth2(
     CLIENT_ID,
     CLIENT_SECRET,
@@ -172,10 +144,8 @@ function getOAuthClient() {
 
 const oauthStates = new Map();
 
-// FILE UPLOAD SETTINGS
 const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, UPLOAD_DIR),
-
   filename: (req, file, cb) => {
     const ext = path.extname(file.originalname).slice(0, 12);
     cb(null, crypto.randomUUID() + ext);
@@ -184,10 +154,7 @@ const storage = multer.diskStorage({
 
 const upload = multer({
   storage,
-  limits: {
-    fileSize: 100 * 1024 * 1024,
-    files: 2
-  },
+  limits: { fileSize: 100 * 1024 * 1024, files: 2 },
   fileFilter: (req, file, cb) => {
     if (
       file.mimetype.startsWith("video/") ||
@@ -200,20 +167,22 @@ const upload = multer({
   }
 });
 
-// HEALTH
+// HEALTH CHECK
 app.get("/api/health", (req, res) => {
   res.json({
     status: "online",
     app: "Creator Auto Publisher",
     adminPasswordConfigured: Boolean(ADMIN_PASSWORD),
     googleOAuthConfigured: oauthConfigured(),
+    uploadApi: "available",
+    scheduler: "running",
     youtubePublishingEnabled:
       process.env.ENABLE_YOUTUBE_PUBLISHING === "true",
     note: "YouTube test uploads use private visibility."
   });
 });
 
-// YOUTUBE STATUS
+// YOUTUBE CONNECTION STATUS
 app.get("/api/youtube/status", (req, res) => {
   const tokens = readTokens();
 
@@ -290,12 +259,14 @@ app.get("/auth/youtube/callback", async (req, res) => {
     res.send(`
       <h2>YouTube authorization successful!</h2>
       <p>Authorization tokens have been saved.</p>
-      <p>Automatic publishing is controlled separately.</p>
+      <p>Automatic publishing remains controlled separately.</p>
       <a href="/">Return to Creator Auto Publisher</a>
     `);
   } catch (err) {
     console.error("OAuth callback error:", err.message);
-    res.status(500).send("YouTube authorization failed. Check server logs.");
+    res.status(500).send(
+      "YouTube authorization failed. Check server logs."
+    );
   }
 });
 
@@ -318,6 +289,7 @@ app.post(
 
     res.status(201).json({
       message: "Upload completed.",
+
       video: video
         ? {
             fileName: video.filename,
@@ -325,6 +297,7 @@ app.post(
             size: video.size
           }
         : null,
+
       thumbnail: thumbnail
         ? {
             fileName: thumbnail.filename,
@@ -335,6 +308,21 @@ app.post(
     });
   }
 );
+
+const ALLOWED_PLATFORMS = [
+  "YouTube",
+  "Instagram",
+  "Facebook",
+  "Telegram"
+];
+
+function validFutureDate(dateTime) {
+  return (
+    typeof dateTime === "string" &&
+    Number.isFinite(Date.parse(dateTime)) &&
+    Date.parse(dateTime) > Date.now()
+  );
+}
 
 // SAVE PUBLISHING PLAN
 app.post("/api/plans", (req, res) => {
@@ -351,20 +339,22 @@ app.post("/api/plans", (req, res) => {
   } = req.body || {};
 
   if (!title || typeof title !== "string" || !title.trim()) {
-    return res.status(400).json({ error: "Title is required." });
-  }
-
-  if (!Array.isArray(platforms) || !platforms.length) {
     return res.status(400).json({
-      error: "Select at least one platform."
+      error: "Title is required."
     });
   }
 
   if (
-    typeof dateTime !== "string" ||
-    !Number.isFinite(Date.parse(dateTime)) ||
-    Date.parse(dateTime) <= Date.now()
+    !Array.isArray(platforms) ||
+    !platforms.length ||
+    platforms.some(p => !ALLOWED_PLATFORMS.includes(p))
   ) {
+    return res.status(400).json({
+      error: "Select valid platforms."
+    });
+  }
+
+  if (!validFutureDate(dateTime)) {
     return res.status(400).json({
       error: "Select a future publishing date and time."
     });
@@ -381,8 +371,12 @@ app.post("/api/plans", (req, res) => {
     platforms,
     contentType: String(contentType).slice(0, 100),
     dateTime,
-    videoFileName: String(videoFileName).slice(0, 255),
-    thumbnailFileName: String(thumbnailFileName).slice(0, 255),
+    videoFileName: path.basename(
+      String(videoFileName)
+    ).slice(0, 255),
+    thumbnailFileName: path.basename(
+      String(thumbnailFileName)
+    ).slice(0, 255),
     status: "scheduled",
     createdAt: new Date().toISOString()
   };
@@ -401,9 +395,73 @@ app.get("/api/plans", (req, res) => {
   res.json({ plans: readPlans() });
 });
 
-// CANCEL PUBLISHING PLAN
+// EDIT A SCHEDULED PLAN
+app.put("/api/plans/:id", (req, res) => {
+  const plans = readPlans();
+
+  const plan = plans.find(p => p.id === req.params.id);
+
+  if (!plan) {
+    return res.status(404).json({
+      error: "Publishing plan not found."
+    });
+  }
+
+  if (plan.status !== "scheduled") {
+    return res.status(400).json({
+      error: "Only scheduled plans can be edited."
+    });
+  }
+
+  const body = req.body || {};
+
+  if (
+    typeof body.title !== "string" ||
+    !body.title.trim() ||
+    body.title.trim().length > 100
+  ) {
+    return res.status(400).json({
+      error: "Title is required and must be 100 characters or less."
+    });
+  }
+
+  if (!validFutureDate(body.dateTime)) {
+    return res.status(400).json({
+      error: "Choose a future publishing date and time."
+    });
+  }
+
+  if (
+    !Array.isArray(body.platforms) ||
+    !body.platforms.length ||
+    body.platforms.some(p => !ALLOWED_PLATFORMS.includes(p))
+  ) {
+    return res.status(400).json({
+      error: "Select valid platforms."
+    });
+  }
+
+  plan.title = body.title.trim();
+  plan.description = String(body.description || "").slice(0, 5000);
+  plan.tags = String(body.tags || "").slice(0, 1000);
+  plan.hashtags = String(body.hashtags || "").slice(0, 1000);
+  plan.platforms = body.platforms;
+  plan.contentType = String(body.contentType || "").slice(0, 100);
+  plan.dateTime = body.dateTime;
+  plan.updatedAt = new Date().toISOString();
+
+  savePlans(plans);
+
+  res.json({
+    message: "Publishing plan updated.",
+    plan
+  });
+});
+
+// CANCEL A SCHEDULED PLAN
 app.post("/api/plans/:id/cancel", (req, res) => {
   const plans = readPlans();
+
   const plan = plans.find(p => p.id === req.params.id);
 
   if (!plan) {
@@ -444,11 +502,9 @@ async function publishYouTubePlan(plan) {
     throw new Error("The uploaded video file could not be found.");
   }
 
-  const auth = getOAuthClient();
-
   const youtube = google.youtube({
     version: "v3",
-    auth
+    auth: getOAuthClient()
   });
 
   const tags = String(plan.tags || "")
@@ -460,13 +516,13 @@ async function publishYouTubePlan(plan) {
   const videoResource = {
     snippet: {
       title: plan.title,
-      description:
-        [plan.description, plan.hashtags]
-          .filter(Boolean)
-          .join("\n\n")
-          .slice(0, 5000),
+      description: [
+        plan.description,
+        plan.hashtags
+      ].filter(Boolean).join("\n\n").slice(0, 5000),
       categoryId: "22"
     },
+
     status: {
       privacyStatus: "private",
       selfDeclaredMadeForKids: false
@@ -506,45 +562,58 @@ async function publishYouTubePlan(plan) {
   return videoId;
 }
 
-// SCHEDULER - DISABLED UNLESS ENV VARIABLE IS TRUE
+// SCHEDULER
+let schedulerBusy = false;
+
 cron.schedule("* * * * *", async () => {
-  if (process.env.ENABLE_YOUTUBE_PUBLISHING !== "true") {
+  if (
+    process.env.ENABLE_YOUTUBE_PUBLISHING !== "true" ||
+    schedulerBusy
+  ) {
     return;
   }
 
-  const plans = readPlans();
+  schedulerBusy = true;
 
-  for (const plan of plans) {
-    if (
-      plan.status !== "scheduled" ||
-      !plan.platforms?.includes("YouTube") ||
-      Date.parse(plan.dateTime) > Date.now()
-    ) {
-      continue;
+  try {
+    const plans = readPlans();
+
+    for (const plan of plans) {
+      if (
+        plan.status !== "scheduled" ||
+        !plan.platforms?.includes("YouTube") ||
+        Date.parse(plan.dateTime) > Date.now()
+      ) {
+        continue;
+      }
+
+      plan.status = "publishing";
+      plan.attemptedAt = new Date().toISOString();
+
+      savePlans(plans);
+
+      try {
+        const videoId = await publishYouTubePlan(plan);
+
+        plan.status = "published";
+        plan.youtubeVideoId = videoId;
+        plan.publishedAt = new Date().toISOString();
+        plan.error = "";
+      } catch (err) {
+        console.error("YouTube publish failed:", err.message);
+
+        plan.status = "failed";
+        plan.error = String(err.message).slice(0, 500);
+      }
+
+      savePlans(plans);
     }
-
-    plan.status = "publishing";
-    plan.attemptedAt = new Date().toISOString();
-    savePlans(plans);
-
-    try {
-      const videoId = await publishYouTubePlan(plan);
-
-      plan.status = "published";
-      plan.youtubeVideoId = videoId;
-      plan.publishedAt = new Date().toISOString();
-      plan.error = "";
-    } catch (err) {
-      console.error("YouTube publish failed:", err.message);
-      plan.status = "failed";
-      plan.error = String(err.message).slice(0, 500);
-    }
-
-    savePlans(plans);
+  } finally {
+    schedulerBusy = false;
   }
 });
 
-// UPLOAD ERRORS
+// REQUEST ERRORS
 app.use((err, req, res, next) => {
   if (err instanceof multer.MulterError) {
     return res.status(400).json({
@@ -569,7 +638,8 @@ app.get("/", (req, res) => {
   res.sendFile(path.join(__dirname, "index.html"));
 });
 
-// START SERVER
 app.listen(PORT, "0.0.0.0", () => {
-  console.log(`Creator Auto Publisher running on port ${PORT}`);
+  console.log(
+    `Creator Auto Publisher running on port ${PORT}`
+  );
 });
