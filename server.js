@@ -374,6 +374,33 @@ app.post("/api/plans", (req, res) => {
 app.get("/api/plans", (req, res) => {
   res.json({ plans: readPlans() });
 });
+// CANCEL PUBLISHING PLAN
+app.post("/api/plans/:id/cancel", (req, res) => {
+  const plans = readPlans();
+  const plan = plans.find(p => p.id === req.params.id);
+
+  if (!plan) {
+    return res.status(404).json({
+      error: "Publishing plan not found."
+    });
+  }
+
+  if (plan.status !== "scheduled") {
+    return res.status(400).json({
+      error: "Only scheduled plans can be cancelled."
+    });
+  }
+
+  plan.status = "cancelled";
+  plan.cancelledAt = new Date().toISOString();
+
+  savePlans(plans);
+
+  res.json({
+    message: "Publishing plan cancelled successfully.",
+    plan
+  });
+});
 
 // YOUTUBE PRIVATE TEST UPLOAD
 async function publishYouTubePlan(plan) {
