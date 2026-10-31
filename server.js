@@ -63,7 +63,7 @@ function adminAuth(req, res, next) {
   next();
 }
 
-// Public health endpoint and OAuth callback only.
+// PUBLIC HEALTH AND OAUTH CALLBACK
 app.use((req, res, next) => {
   if (
     req.path === "/api/health" ||
@@ -75,8 +75,31 @@ app.use((req, res, next) => {
   adminAuth(req, res, next);
 });
 
-app.use(express.static(__dirname));
+// BLOCK PRIVATE FILES
+app.use((req, res, next) => {
+  const p = req.path;
 
+  if (
+    p === "/data" || p.startsWith("/data/") ||
+    p === "/uploads" || p.startsWith("/uploads/") ||
+    p === "/server.js" ||
+    p === "/package.json" ||
+    p === "/.env" ||
+    p.startsWith("/.git/")
+  ) {
+    return res.sendStatus(404);
+  }
+
+  next();
+});
+
+// SAFE STATIC FILES
+app.use(express.static(__dirname, {
+  dotfiles: "deny",
+  index: false
+}));
+
+// GOOGLE OAUTH SETTINGS
 const CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
 const CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
 
@@ -86,6 +109,7 @@ const BASE_URL =
 
 const REDIRECT_URI = BASE_URL + "/auth/youtube/callback";
 
+// JSON FUNCTIONS
 function readJSON(file, fallback) {
   try {
     return JSON.parse(fs.readFileSync(file, "utf8"));
@@ -124,6 +148,7 @@ function saveTokens(tokens) {
   });
 }
 
+// OAUTH FUNCTIONS
 function oauthConfigured() {
   return Boolean(CLIENT_ID && CLIENT_SECRET);
 }
@@ -147,6 +172,7 @@ function getOAuthClient() {
 
 const oauthStates = new Map();
 
+// FILE UPLOAD SETTINGS
 const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, UPLOAD_DIR),
 
@@ -374,6 +400,7 @@ app.post("/api/plans", (req, res) => {
 app.get("/api/plans", (req, res) => {
   res.json({ plans: readPlans() });
 });
+
 // CANCEL PUBLISHING PLAN
 app.post("/api/plans/:id/cancel", (req, res) => {
   const plans = readPlans();
@@ -542,6 +569,7 @@ app.get("/", (req, res) => {
   res.sendFile(path.join(__dirname, "index.html"));
 });
 
+// START SERVER
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`Creator Auto Publisher running on port ${PORT}`);
 });
