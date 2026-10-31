@@ -22,6 +22,59 @@ if (!fs.existsSync(PLANS_FILE)) {
 }
 
 app.use(express.json({ limit: "1mb" }));
+
+// ADMIN PASSWORD PROTECTION
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD;
+
+function adminAuth(req, res, next) {
+  if (!ADMIN_PASSWORD) {
+    return res.status(503).send("Admin password is not configured.");
+  }
+
+  const header = req.headers.authorization || "";
+  const match = header.match(/^Basic\s+(.+)$/i);
+
+  if (!match) {
+    res.set("WWW-Authenticate", 'Basic realm="Creator Auto Publisher"');
+    return res.status(401).send("Admin login required.");
+  }
+
+  let credentials;
+
+  try {
+    credentials = Buffer.from(match[1], "base64").toString("utf8");
+  } catch {
+    return res.status(401).send("Invalid login.");
+  }
+
+  const separator = credentials.indexOf(":");
+  const password = separator >= 0
+    ? credentials.slice(separator + 1)
+    : "";
+
+  const a = Buffer.from(password);
+  const b = Buffer.from(ADMIN_PASSWORD);
+
+  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
+    res.set("WWW-Authenticate", 'Basic realm="Creator Auto Publisher"');
+    return res.status(401).send("Wrong admin password.");
+  }
+
+  next();
+}
+
+// Public health endpoint and OAuth callback only.
+app.use((req, res, next) => {
+  if (
+    req.path === "/api/health" ||
+    req.path === "/auth/youtube/callback"
+  ) {
+    return next();
+  }
+
+  adminAuth(req, res, next);
+});
+
 app.use(express.static(__dirname));
 
 const CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
@@ -121,19 +174,20 @@ const upload = multer({
   }
 });
 
-// Health
+// HEALTH
 app.get("/api/health", (req, res) => {
   res.json({
     status: "online",
     app: "Creator Auto Publisher",
+    adminPasswordConfigured: Boolean(ADMIN_PASSWORD),
     googleOAuthConfigured: oauthConfigured(),
     youtubePublishingEnabled:
       process.env.ENABLE_YOUTUBE_PUBLISHING === "true",
-    note: "Publishing remains disabled unless explicitly enabled."
+    note: "YouTube test uploads use private visibility."
   });
 });
 
-// YouTube connection status
+// YOUTUBE STATUS
 app.get("/api/youtube/status", (req, res) => {
   const tokens = readTokens();
 
@@ -147,7 +201,7 @@ app.get("/api/youtube/status", (req, res) => {
   });
 });
 
-// Start Google authorization
+// START GOOGLE AUTHORIZATION
 app.get("/auth/youtube/start", (req, res) => {
   if (!oauthConfigured()) {
     return res.status(503).send("Google OAuth is not configured.");
@@ -177,7 +231,7 @@ app.get("/auth/youtube/start", (req, res) => {
   );
 });
 
-// Google authorization callback
+// GOOGLE CALLBACK
 app.get("/auth/youtube/callback", async (req, res) => {
   try {
     if (req.query.error) {
@@ -219,7 +273,7 @@ app.get("/auth/youtube/callback", async (req, res) => {
   }
 });
 
-// Upload video or thumbnail
+// UPLOAD VIDEO OR THUMBNAIL
 app.post(
   "/api/upload",
   upload.fields([
@@ -256,7 +310,7 @@ app.post(
   }
 );
 
-// Save publishing plan
+// SAVE PUBLISHING PLAN
 app.post("/api/plans", (req, res) => {
   const {
     title,
@@ -316,18 +370,21 @@ app.post("/api/plans", (req, res) => {
   });
 });
 
-// List plans
+// LIST PLANS
 app.get("/api/plans", (req, res) => {
   res.json({ plans: readPlans() });
 });
 
-// Publish one YouTube plan
+// YOUTUBE PRIVATE TEST UPLOAD
 async function publishYouTubePlan(plan) {
   if (!plan.videoFileName) {
     throw new Error("No video file is attached to this plan.");
   }
 
-  const videoPath = path.join(UPLOAD_DIR, path.basename(plan.videoFileName));
+  const videoPath = path.join(
+    UPLOAD_DIR,
+    path.basename(plan.videoFileName)
+  );
 
   if (!fs.existsSync(videoPath)) {
     throw new Error("The uploaded video file could not be found.");
@@ -357,7 +414,7 @@ async function publishYouTubePlan(plan) {
       categoryId: "22"
     },
     status: {
-      privacyStatus: "public",
+      privacyStatus: "private",
       selfDeclaredMadeForKids: false
     }
   };
@@ -395,15 +452,13 @@ async function publishYouTubePlan(plan) {
   return videoId;
 }
 
-// Scheduler: disabled by default.
-// Do not enable until the dashboard has proper login protection.
+// SCHEDULER - DISABLED UNLESS ENV VARIABLE IS TRUE
 cron.schedule("* * * * *", async () => {
   if (process.env.ENABLE_YOUTUBE_PUBLISHING !== "true") {
     return;
   }
 
   const plans = readPlans();
-  let changed = false;
 
   for (const plan of plans) {
     if (
@@ -414,7 +469,6 @@ cron.schedule("* * * * *", async () => {
       continue;
     }
 
-    // Prevent overlapping attempts.
     plan.status = "publishing";
     plan.attemptedAt = new Date().toISOString();
     savePlans(plans);
@@ -432,15 +486,11 @@ cron.schedule("* * * * *", async () => {
       plan.error = String(err.message).slice(0, 500);
     }
 
-    changed = true;
-  }
-
-  if (changed) {
     savePlans(plans);
   }
 });
 
-// Upload errors
+// UPLOAD ERRORS
 app.use((err, req, res, next) => {
   if (err instanceof multer.MulterError) {
     return res.status(400).json({
@@ -460,7 +510,7 @@ app.use((err, req, res, next) => {
   next();
 });
 
-// Dashboard
+// DASHBOARD
 app.get("/", (req, res) => {
   res.sendFile(path.join(__dirname, "index.html"));
 });
