@@ -40,6 +40,7 @@ function adminAuth(req, res, next) {
   }
 
   let credentials;
+
   try {
     credentials = Buffer.from(match[1], "base64").toString("utf8");
   } catch {
@@ -48,6 +49,7 @@ function adminAuth(req, res, next) {
 
   const separator = credentials.indexOf(":");
   const password = separator >= 0 ? credentials.slice(separator + 1) : "";
+
   const a = Buffer.from(password);
   const b = Buffer.from(ADMIN_PASSWORD);
 
@@ -67,6 +69,7 @@ app.use((req, res, next) => {
   ) {
     return next();
   }
+
   adminAuth(req, res, next);
 });
 
@@ -146,6 +149,7 @@ const oauthStates = new Map();
 
 const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, UPLOAD_DIR),
+
   filename: (req, file, cb) => {
     const ext = path.extname(file.originalname).slice(0, 12);
     cb(null, crypto.randomUUID() + ext);
@@ -154,7 +158,11 @@ const storage = multer.diskStorage({
 
 const upload = multer({
   storage,
-  limits: { fileSize: 100 * 1024 * 1024, files: 2 },
+  limits: {
+    fileSize: 100 * 1024 * 1024,
+    files: 2
+  },
+
   fileFilter: (req, file, cb) => {
     if (
       file.mimetype.startsWith("video/") ||
@@ -178,11 +186,11 @@ app.get("/api/health", (req, res) => {
     scheduler: "running",
     youtubePublishingEnabled:
       process.env.ENABLE_YOUTUBE_PUBLISHING === "true",
-    note: "YouTube test uploads use private visibility."
+    note: "Manual test uploads always use private visibility."
   });
 });
 
-// YOUTUBE CONNECTION STATUS
+// YOUTUBE STATUS
 app.get("/api/youtube/status", (req, res) => {
   const tokens = readTokens();
 
@@ -203,9 +211,12 @@ app.get("/auth/youtube/start", (req, res) => {
   }
 
   const state = crypto.randomBytes(32).toString("hex");
+
   oauthStates.set(state, Date.now());
 
-  setTimeout(() => oauthStates.delete(state), 10 * 60 * 1000).unref();
+  setTimeout(() => {
+    oauthStates.delete(state);
+  }, 10 * 60 * 1000).unref();
 
   const params = new URLSearchParams({
     client_id: CLIENT_ID,
@@ -262,8 +273,10 @@ app.get("/auth/youtube/callback", async (req, res) => {
       <p>Automatic publishing remains controlled separately.</p>
       <a href="/">Return to Creator Auto Publisher</a>
     `);
+
   } catch (err) {
     console.error("OAuth callback error:", err.message);
+
     res.status(500).send(
       "YouTube authorization failed. Check server logs."
     );
@@ -324,7 +337,7 @@ function validFutureDate(dateTime) {
   );
 }
 
-// SAVE PUBLISHING PLAN
+// SAVE PLAN
 app.post("/api/plans", (req, res) => {
   const {
     title,
@@ -371,12 +384,15 @@ app.post("/api/plans", (req, res) => {
     platforms,
     contentType: String(contentType).slice(0, 100),
     dateTime,
+
     videoFileName: path.basename(
       String(videoFileName)
     ).slice(0, 255),
+
     thumbnailFileName: path.basename(
       String(thumbnailFileName)
     ).slice(0, 255),
+
     status: "scheduled",
     createdAt: new Date().toISOString()
   };
@@ -385,20 +401,21 @@ app.post("/api/plans", (req, res) => {
   savePlans(plans);
 
   res.status(201).json({
-    message: "Plan saved. Publishing is not enabled yet.",
+    message: "Plan saved. Automatic publishing is not enabled.",
     plan
   });
 });
 
 // LIST PLANS
 app.get("/api/plans", (req, res) => {
-  res.json({ plans: readPlans() });
+  res.json({
+    plans: readPlans()
+  });
 });
 
-// EDIT A SCHEDULED PLAN
+// EDIT PLAN
 app.put("/api/plans/:id", (req, res) => {
   const plans = readPlans();
-
   const plan = plans.find(p => p.id === req.params.id);
 
   if (!plan) {
@@ -458,10 +475,9 @@ app.put("/api/plans/:id", (req, res) => {
   });
 });
 
-// CANCEL A SCHEDULED PLAN
+// CANCEL PLAN
 app.post("/api/plans/:id/cancel", (req, res) => {
   const plans = readPlans();
-
   const plan = plans.find(p => p.id === req.params.id);
 
   if (!plan) {
@@ -487,7 +503,7 @@ app.post("/api/plans/:id/cancel", (req, res) => {
   });
 });
 
-// YOUTUBE PRIVATE TEST UPLOAD
+// YOUTUBE UPLOAD - ALWAYS PRIVATE
 async function publishYouTubePlan(plan) {
   if (!plan.videoFileName) {
     throw new Error("No video file is attached to this plan.");
@@ -543,6 +559,18 @@ async function publishYouTubePlan(plan) {
 
   const videoId = response.data.id;
 
+  if (!videoId) {
+    throw new Error("YouTube did not return a video ID.");
+  }
+
+  // Save the video ID before attempting thumbnail.
+  plan.youtubeVideoId = videoId;
+  plan.youtubeUploadedAt = new Date().toISOString();
+  savePlans(readPlans().map(p =>
+    p.id === plan.id ? { ...p, ...plan } : p
+  ));
+
+  // Thumbnail failure must not undo a successful video upload.
   if (plan.thumbnailFileName) {
     const thumbnailPath = path.join(
       UPLOAD_DIR,
@@ -550,17 +578,100 @@ async function publishYouTubePlan(plan) {
     );
 
     if (fs.existsSync(thumbnailPath)) {
-      await youtube.thumbnails.set({
-        videoId,
-        media: {
-          body: fs.createReadStream(thumbnailPath)
-        }
-      });
+      try {
+        await youtube.thumbnails.set({
+          videoId,
+          media: {
+            body: fs.createReadStream(thumbnailPath)
+          }
+        });
+      } catch (err) {
+        console.error("Thumbnail upload failed:", err.message);
+        plan.thumbnailError = String(err.message).slice(0, 300);
+      }
     }
   }
 
   return videoId;
 }
+
+// MANUAL PRIVATE TEST UPLOAD
+app.post("/api/plans/:id/test-upload", async (req, res) => {
+  const plans = readPlans();
+  const plan = plans.find(p => p.id === req.params.id);
+
+  if (!plan) {
+    return res.status(404).json({
+      error: "Publishing plan not found."
+    });
+  }
+
+  if (plan.status !== "scheduled") {
+    return res.status(400).json({
+      error: "Only scheduled plans can be test-uploaded."
+    });
+  }
+
+  if (!plan.platforms?.includes("YouTube")) {
+    return res.status(400).json({
+      error: "YouTube is not selected for this plan."
+    });
+  }
+
+  if (!plan.videoFileName) {
+    return res.status(400).json({
+      error: "This plan has no video file."
+    });
+  }
+
+  plan.status = "publishing";
+  plan.testUploadStartedAt = new Date().toISOString();
+  savePlans(plans);
+
+  try {
+    const videoId = await publishYouTubePlan(plan);
+
+    plan.status = "test-published";
+    plan.youtubeVideoId = videoId;
+    plan.publishedAt = new Date().toISOString();
+    plan.error = "";
+
+    const updatedPlans = readPlans();
+    const index = updatedPlans.findIndex(p => p.id === plan.id);
+
+    if (index !== -1) {
+      updatedPlans[index] = {
+        ...updatedPlans[index],
+        ...plan
+      };
+      savePlans(updatedPlans);
+    }
+
+    res.json({
+      message: "Private test upload completed successfully.",
+      privacyStatus: "private",
+      youtubeVideoId: videoId,
+      youtubeUrl: "https://www.youtube.com/watch?v=" + videoId
+    });
+
+  } catch (err) {
+    console.error("Private test upload failed:", err.message);
+
+    const updatedPlans = readPlans();
+    const index = updatedPlans.findIndex(p => p.id === plan.id);
+
+    if (index !== -1) {
+      updatedPlans[index].status = "failed";
+      updatedPlans[index].error = String(err.message).slice(0, 500);
+      updatedPlans[index].failedAt = new Date().toISOString();
+      savePlans(updatedPlans);
+    }
+
+    res.status(500).json({
+      error: err.message || "Private test upload failed."
+    });
+  }
+});
 
 // SCHEDULER
 let schedulerBusy = false;
@@ -599,6 +710,7 @@ cron.schedule("* * * * *", async () => {
         plan.youtubeVideoId = videoId;
         plan.publishedAt = new Date().toISOString();
         plan.error = "";
+
       } catch (err) {
         console.error("YouTube publish failed:", err.message);
 
@@ -608,6 +720,7 @@ cron.schedule("* * * * *", async () => {
 
       savePlans(plans);
     }
+
   } finally {
     schedulerBusy = false;
   }
@@ -639,7 +752,5 @@ app.get("/", (req, res) => {
 });
 
 app.listen(PORT, "0.0.0.0", () => {
-  console.log(
-    `Creator Auto Publisher running on port ${PORT}`
-  );
+  console.log(`Creator Auto Publisher running on port ${PORT}`);
 });
