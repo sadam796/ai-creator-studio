@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Creator Auto Publisher</title>
+
 <style>
 *{box-sizing:border-box}
 body{margin:0;background:#10131b;color:#fff;font-family:Arial,sans-serif;padding:16px}
@@ -21,6 +22,7 @@ button:disabled{opacity:.5}
 .secondary{background:#374151}
 .danger{background:#dc2626}
 .success{background:#15803d}
+.test{background:#0369a1}
 .checks{display:flex;flex-wrap:wrap;gap:15px;margin-top:10px}
 .checks label{display:flex;align-items:center;gap:7px;margin:0}
 .checks input{width:auto}
@@ -33,8 +35,10 @@ button:disabled{opacity:.5}
 #message.ok{display:block;background:#14532d}
 #message.err{display:block;background:#7f1d1d}
 footer{text-align:center;color:#6b7280;padding:20px;font-size:12px}
+a{color:#93c5fd}
 </style>
 </head>
+
 <body>
 <div class="container">
 
@@ -118,7 +122,6 @@ footer{text-align:center;color:#6b7280;padding:20px;font-size:12px}
 
 <script>
 const $ = id => document.getElementById(id);
-
 let currentPlans = [];
 
 function showMessage(message, error=false) {
@@ -152,7 +155,6 @@ function selectedPlatforms() {
 function localDateTime(iso) {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return iso;
-
   return d.toLocaleString();
 }
 
@@ -191,11 +193,17 @@ $("planForm").addEventListener("submit", async event => {
     let videoFileName = "";
     let thumbnailFileName = "";
 
+    if (!editId && !videoFile) {
+      throw new Error("Please select a video file.");
+    }
+
     if (videoFile || thumbnailFile) {
       const formData = new FormData();
 
       if (videoFile) formData.append("video", videoFile);
       if (thumbnailFile) formData.append("thumbnail", thumbnailFile);
+
+      showMessage("Uploading files... Please wait.");
 
       const uploaded = await api("/api/upload", {
         method: "POST",
@@ -220,21 +228,20 @@ $("planForm").addEventListener("submit", async event => {
       dateTime
     };
 
-    let result;
-
     if (editId) {
-      result = await api("/api/plans/" + encodeURIComponent(editId), {
+      await api("/api/plans/" + encodeURIComponent(editId), {
         method: "PUT",
         headers: {"Content-Type":"application/json"},
         body: JSON.stringify(body)
       });
 
       showMessage("✅ Publishing plan updated!");
+
     } else {
       body.videoFileName = videoFileName;
       body.thumbnailFileName = thumbnailFileName;
 
-      result = await api("/api/plans", {
+      const result = await api("/api/plans", {
         method: "POST",
         headers: {"Content-Type":"application/json"},
         body: JSON.stringify(body)
@@ -250,6 +257,35 @@ $("planForm").addEventListener("submit", async event => {
     showMessage("❌ " + error.message, true);
   }
 });
+
+async function testUpload(id) {
+  const confirmed = confirm(
+    "YouTube par PRIVATE test upload karna hai?\n\n" +
+    "Video public nahi hoga. YouTube processing mein time lag sakta hai."
+  );
+
+  if (!confirmed) return;
+
+  try {
+    showMessage("⏳ Private test upload started. Please wait. Page band mat karo.");
+
+    const result = await api(
+      "/api/plans/" + encodeURIComponent(id) + "/test-upload",
+      {method:"POST"}
+    );
+
+    showMessage(
+      "✅ Private test upload successful! Video ID: " +
+      result.youtubeVideoId
+    );
+
+    await loadPlans();
+
+  } catch (error) {
+    showMessage("❌ Test upload failed: " + error.message, true);
+    await loadPlans();
+  }
+}
 
 async function loadPlans() {
   const box = $("plans");
@@ -286,6 +322,14 @@ async function loadPlans() {
       badge.textContent = "Status: " + (plan.status || "unknown");
       item.appendChild(badge);
 
+      if (plan.status === "scheduled" && (plan.platforms || []).includes("YouTube")) {
+        const test = document.createElement("button");
+        test.textContent = "🔒 Private Test Upload";
+        test.className = "test";
+        test.onclick = () => testUpload(plan.id);
+        item.appendChild(test);
+      }
+
       if (plan.youtubeVideoId) {
         const link = document.createElement("a");
         link.href = "https://www.youtube.com/watch?v=" +
@@ -293,9 +337,15 @@ async function loadPlans() {
         link.target = "_blank";
         link.rel = "noopener";
         link.textContent = "Open YouTube video";
-        link.style.color = "#93c5fd";
         item.appendChild(document.createElement("br"));
         item.appendChild(link);
+      }
+
+      if (plan.thumbnailError) {
+        const thumbError = document.createElement("p");
+        thumbError.className = "small";
+        thumbError.textContent = "Thumbnail warning: " + plan.thumbnailError;
+        item.appendChild(thumbError);
       }
 
       if (plan.error) {
