@@ -659,11 +659,11 @@ let shortsBusy = false;
 function runFFmpeg(args) {
   return new Promise((resolve, reject) => {
     const ffmpegPath = process.env.FFMPEG_PATH || "ffmpeg";
-    const process = spawn(ffmpegPath, args);
+    const child = spawn(ffmpegPath, args);
 
     let errorText = "";
 
-    process.stderr.on("data", data => {
+    child.stderr.on("data", data => {
       errorText += data.toString();
 
       if (errorText.length > 12000) {
@@ -671,9 +671,9 @@ function runFFmpeg(args) {
       }
     });
 
-    process.on("error", reject);
+    child.on("error", reject);
 
-    process.on("close", code => {
+    child.on("close", code => {
       if (code === 0) resolve();
       else reject(new Error("FFmpeg failed: " + errorText.slice(-1500)));
     });
@@ -712,6 +712,75 @@ ${transcript}
   return Array.isArray(parsed.clips) ? parsed.clips : [];
 }
 
+// ROMAN URDU CAPTIONS
+async function romanizeUrduSegments(client, segments) {
+  const lines = segments.map(s => String(s.text || ""));
+
+  const result = await client.chat.completions.create({
+    model: process.env.OPENAI_MODEL || "gpt-4o-mini",
+    messages: [
+      {
+        role: "system",
+        content: "Convert Urdu text into natural Roman Urdu using English letters. Do not translate into English. Keep the same meaning and order. Return JSON only with a lines array."
+      },
+      {
+        role: "user",
+        content: JSON.stringify({ lines })
+      }
+    ],
+    response_format: { type: "json_object" }
+  });
+
+  const parsed = JSON.parse(result.choices[0].message.content);
+
+  if (!Array.isArray(parsed.lines) || parsed.lines.length !== lines.length) {
+    throw new Error("Roman Urdu caption conversion returned an invalid result.");
+  }
+
+  return parsed.lines.map(x => String(x));
+}
+
+function srtTime(seconds) {
+  const ms = Math.max(0, Math.round(seconds * 1000));
+  const h = Math.floor(ms / 3600000);
+  const m = Math.floor((ms % 3600000) / 60000);
+  const s = Math.floor((ms % 60000) / 1000);
+  const milli = ms % 1000;
+
+  return (
+    String(h).padStart(2, "0") + ":" +
+    String(m).padStart(2, "0") + ":" +
+    String(s).padStart(2, "0") + "," +
+    String(milli).padStart(3, "0")
+  );
+}
+
+function makeSrt(segments, romanLines, clip) {
+  let output = "";
+  let index = 1;
+
+  segments.forEach((segment, i) => {
+    const start = Math.max(0, Number(segment.start) - clip.start);
+    const end = Math.max(start + 0.1, Number(segment.end) - clip.start);
+
+    if (end <= 0 || start >= clip.end - clip.start) return;
+
+    output +=
+      index++ + "\n" +
+      srtTime(start) + " --> " + srtTime(end) + "\n" +
+      romanLines[i].replace(/[{}]/g, "") + "\n\n";
+  });
+
+  return output;
+}
+
+function escapeSubtitlePath(filePath) {
+  return filePath
+    .replace(/\\/g, "/")
+    .replace(/:/g, "\\:")
+    .replace(/'/g, "\\'");
+}
+
 async function processShorts(job) {
   if (shortsBusy) {
     job.status = "queued";
@@ -719,15 +788,16 @@ async function processShorts(job) {
   }
 
   shortsBusy = true;
+  let audioPath = "";
+  const videoPath = path.join(UPLOAD_DIR, job.fileName);
 
   try {
     const client = getOpenAI();
-    const videoPath = path.join(UPLOAD_DIR, job.fileName);
 
-    job.status = "transcribing";
-    job.progress = 10;
+    job.status = "extracting audio";
+    job.progress = 5;
 
-    const audioPath = path.join(SHORTS_DIR, job.id + ".mp3");
+    audioPath = path.join(SHORTS_DIR, job.id + ".mp3");
 
     await runFFmpeg([
       "-y",
@@ -742,8 +812,11 @@ async function processShorts(job) {
     const audioStats = fs.statSync(audioPath);
 
     if (audioStats.size > 24 * 1024 * 1024) {
-      throw new Error("Audio is too large for one transcription request. A shorter video is needed.");
+      throw new Error("Audio is too large for one transcription request. Use a shorter video.");
     }
+
+    job.status = "transcribing Urdu";
+    job.progress = 15;
 
     const transcription = await client.audio.transcriptions.create({
       file: fs.createReadStream(audioPath),
@@ -773,7 +846,8 @@ async function processShorts(job) {
         reason: "Manual selection"
       }];
     } else {
-      job.status = "selecting moments";
+      job.status = "selecting best moments";
+
       clips = await getClipSuggestions(
         client,
         transcript.slice(0, 45000),
@@ -782,9 +856,7 @@ async function processShorts(job) {
       );
     }
 
-    const videoDuration = Number(
-      transcription.duration || 0
-    );
+    const videoDuration = Number(transcription.duration || 0);
 
     clips = clips
       .map(c => ({
@@ -803,7 +875,7 @@ async function processShorts(job) {
       throw new Error("AI could not find valid clips.");
     }
 
-    job.status = "rendering";
+    job.status = "rendering Shorts";
     job.progress = 50;
     job.outputs = [];
 
@@ -816,9 +888,39 @@ async function processShorts(job) {
         "-y",
         "-ss", String(clip.start),
         "-i", videoPath,
-        "-t", String(clip.end - clip.start),
-        "-vf",
-        "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920",
+        "-t", String(clip.end - clip.start)
+      ];
+
+      let subtitleFile = "";
+
+      if (job.captions) {
+        job.status = "creating Roman Urdu captions";
+
+        const selectedSegments = segments.filter(s =>
+          Number(s.end) > clip.start &&
+          Number(s.start) < clip.end
+        );
+
+        const romanLines = await romanizeUrduSegments(client, selectedSegments);
+        const srt = makeSrt(selectedSegments, romanLines, clip);
+
+        subtitleFile = path.join(SHORTS_DIR, job.id + "-" + (i + 1) + ".srt");
+        fs.writeFileSync(subtitleFile, srt, "utf8");
+
+        args.push(
+          "-vf",
+          "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,subtitles='" +
+            escapeSubtitlePath(subtitleFile) +
+            "':force_style='FontName=Arial,FontSize=22,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=1,Outline=2,Shadow=1,Alignment=2,MarginV=100'"
+        );
+      } else {
+        args.push(
+          "-vf",
+          "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920"
+        );
+      }
+
+      args.push(
         "-c:v", "libx264",
         "-preset", "veryfast",
         "-crf", "23",
@@ -826,16 +928,22 @@ async function processShorts(job) {
         "-b:a", "128k",
         "-movflags", "+faststart",
         outputPath
-      ];
+      );
 
       await runFFmpeg(args);
+
+      if (subtitleFile) {
+        try {
+          fs.unlinkSync(subtitleFile);
+        } catch {}
+      }
 
       job.outputs.push({
         fileName: outputName,
         start: clip.start,
         end: clip.end,
         reason: clip.reason,
-        captions: "off"
+        captions: job.captions ? "roman-urdu" : "off"
       });
 
       job.progress = 50 + Math.round(((i + 1) / clips.length) * 45);
@@ -844,15 +952,17 @@ async function processShorts(job) {
     job.status = "completed";
     job.progress = 100;
     job.completedAt = new Date().toISOString();
-
-    try {
-      fs.unlinkSync(audioPath);
-    } catch {}
   } catch (err) {
     console.error("Shorts processing failed:", err.message);
     job.status = "failed";
     job.error = String(err.message).slice(0, 1000);
   } finally {
+    if (audioPath) {
+      try {
+        fs.unlinkSync(audioPath);
+      } catch {}
+    }
+
     shortsBusy = false;
 
     const nextJob = [...shortsJobs.values()].find(
@@ -908,6 +1018,9 @@ app.post("/api/shorts", shortsUpload.single("video"), (req, res) => {
     duration,
     manualStart,
     manualEnd,
+    captions: ["on", "true", "1"].includes(
+      String(req.body.captions || "").toLowerCase()
+    ),
     status: "queued",
     progress: 0,
     outputs: [],
