@@ -18,7 +18,7 @@ label{display:block;margin:14px 0 6px;color:#d1d5db;font-size:14px}
 input,textarea,select{width:100%;padding:12px;border-radius:8px;border:1px solid #3c465c;background:#111827;color:white;font-size:15px}
 textarea{min-height:90px;resize:vertical}
 button{padding:12px 16px;border:0;border-radius:8px;background:#6366f1;color:white;font-weight:bold;font-size:14px;cursor:pointer;margin:5px 4px 5px 0}
-button:disabled{opacity:.5}
+button:disabled{opacity:.5;cursor:not-allowed}
 .secondary{background:#374151}
 .danger{background:#dc2626}
 .success{background:#15803d}
@@ -36,6 +36,12 @@ button:disabled{opacity:.5}
 #message.err{display:block;background:#7f1d1d}
 footer{text-align:center;color:#6b7280;padding:20px;font-size:12px}
 a{color:#93c5fd}
+.progress{height:12px;background:#374151;border-radius:20px;overflow:hidden;margin:12px 0}
+.progress div{height:100%;width:0;background:#6366f1;transition:width .3s}
+.modebox{background:#111827;border:1px solid #374151;border-radius:10px;padding:12px;margin:12px 0}
+video{width:100%;max-height:450px;background:#000;border-radius:10px;margin-top:10px}
+.result{border:1px solid #374151;border-radius:10px;padding:12px;margin:12px 0}
+hr{border:0;border-top:1px solid #374151;margin:20px 0}
 </style>
 </head>
 
@@ -47,8 +53,10 @@ a{color:#93c5fd}
 <div class="subtitle">Your mobile video publishing dashboard</div>
 </header>
 
+<!-- EXISTING PUBLISHER -->
 <div class="card">
 <h2>📤 Upload Your Video</h2>
+<div class="small">Maximum file size: 1 GB (subject to hosting upload limits).</div>
 
 <form id="planForm">
 <input type="hidden" id="editId">
@@ -99,8 +107,77 @@ a{color:#93c5fd}
 </form>
 
 <div id="message"></div>
+<div id="publisherProgress" class="small"></div>
 </div>
 
+<!-- AI SHORTS MAKER -->
+<div class="card">
+<h2>🎬 AI Shorts Maker</h2>
+<p class="small">
+Upload a long video and create vertical Shorts.
+Maximum selected video size: 1 GB, subject to Hostinger limits.
+</p>
+
+<label>Select Long Video</label>
+<input type="file" id="shortsVideo" accept="video/*">
+
+<div class="modebox">
+<label>Creation Mode</label>
+<select id="shortsMode">
+<option value="ai">🤖 AI Automatic — Find Best Moments</option>
+<option value="manual">✂️ Manual — Choose Timestamp</option>
+</select>
+
+<div id="aiOptions">
+<label>Number of Shorts</label>
+<select id="shortsCount">
+<option value="5">5 Shorts</option>
+<option value="10">10 Shorts</option>
+<option value="15">15 Shorts</option>
+</select>
+
+<label>Each Short Duration</label>
+<select id="shortsDuration">
+<option value="30">30 Seconds</option>
+<option value="45">45 Seconds</option>
+<option value="60">60 Seconds</option>
+</select>
+</div>
+
+<div id="manualOptions" style="display:none">
+<label>Start Time (seconds)</label>
+<input type="number" id="manualStart" min="0" value="0">
+
+<label>End Time (seconds)</label>
+<input type="number" id="manualEnd" min="1" value="30">
+<p class="small">Manual clip maximum: 90 seconds.</p>
+</div>
+</div>
+
+<label>Roman Urdu Captions</label>
+<select id="captions">
+<option value="off">OFF — No Captions (Default)</option>
+<option value="on" disabled>ON — Roman Urdu (Not available yet)</option>
+</select>
+<p class="small">
+Roman Urdu caption rendering is not yet implemented in the current backend.
+</p>
+
+<button type="button" id="createShortsBtn">✨ Create Shorts</button>
+
+<div id="shortsMessage" class="status">
+Select a video to get started.
+</div>
+
+<div class="progress">
+<div id="shortsProgressBar"></div>
+</div>
+
+<div id="shortsProgressText" class="small"></div>
+<div id="shortsResults"></div>
+</div>
+
+<!-- PUBLISHING PLANS -->
 <div class="card">
 <h2>📅 Publishing Plans</h2>
 <button onclick="loadPlans()">🔄 Refresh Plans</button>
@@ -109,12 +186,14 @@ a{color:#93c5fd}
 </div>
 </div>
 
+<!-- SYSTEM STATUS -->
 <div class="card">
 <h2>⚙️ System Status</h2>
 <button onclick="checkStatus()">Check Status</button>
 <div id="health" class="status">Backend: Not checked</div>
 <div id="youtube" class="status">YouTube: Not checked</div>
 <div id="publishing" class="status">Automatic publishing: Not confirmed</div>
+<div id="shortsSystem" class="status">AI Shorts: Not checked</div>
 </div>
 
 <footer>Creator Auto Publisher • Mobile Dashboard</footer>
@@ -122,7 +201,9 @@ a{color:#93c5fd}
 
 <script>
 const $ = id => document.getElementById(id);
+
 let currentPlans = [];
+let shortsPolling = null;
 
 function showMessage(message, error=false) {
   const box = $("message");
@@ -160,10 +241,7 @@ function localDateTime(iso) {
 
 function setDefaultDateTime() {
   const d = new Date(Date.now() + 60 * 60 * 1000);
-
-  const local = new Date(
-    d.getTime() - d.getTimezoneOffset() * 60000
-  );
+  const local = new Date(d.getTime() - d.getTimezoneOffset() * 60000);
 
   $("date").value = local.toISOString().slice(0,10);
   $("time").value = local.toISOString().slice(11,16);
@@ -173,14 +251,14 @@ function resetForm() {
   $("planForm").reset();
   $("editId").value = "";
   $("saveBtn").textContent = "💾 Save Publishing Plan";
-  $("video").required = false;
-  $("thumbnail").required = false;
   setDefaultDateTime();
   hideMessage();
+  $("publisherProgress").textContent = "";
 }
 
 $("resetBtn").addEventListener("click", resetForm);
 
+// NORMAL PUBLISHER FORM
 $("planForm").addEventListener("submit", async event => {
   event.preventDefault();
   hideMessage();
@@ -195,6 +273,14 @@ $("planForm").addEventListener("submit", async event => {
 
     if (!editId && !videoFile) {
       throw new Error("Please select a video file.");
+    }
+
+    if (videoFile && videoFile.size > 1024 * 1024 * 1024) {
+      throw new Error("Video maximum size is 1 GB.");
+    }
+
+    if (thumbnailFile && thumbnailFile.size > 1024 * 1024 * 1024) {
+      throw new Error("Thumbnail is too large.");
     }
 
     if (videoFile || thumbnailFile) {
@@ -236,7 +322,6 @@ $("planForm").addEventListener("submit", async event => {
       });
 
       showMessage("✅ Publishing plan updated!");
-
     } else {
       body.videoFileName = videoFileName;
       body.thumbnailFileName = thumbnailFileName;
@@ -247,7 +332,7 @@ $("planForm").addEventListener("submit", async event => {
         body: JSON.stringify(body)
       });
 
-      showMessage(result.message || "✅ Publishing plan saved!");
+      showMessage(result.message || "Publishing plan saved!");
     }
 
     resetForm();
@@ -258,16 +343,17 @@ $("planForm").addEventListener("submit", async event => {
   }
 });
 
+// PRIVATE YOUTUBE TEST
 async function testUpload(id) {
   const confirmed = confirm(
     "YouTube par PRIVATE test upload karna hai?\n\n" +
-    "Video public nahi hoga. YouTube processing mein time lag sakta hai."
+    "Video public nahi hoga."
   );
 
   if (!confirmed) return;
 
   try {
-    showMessage("⏳ Private test upload started. Please wait. Page band mat karo.");
+    showMessage("⏳ Private test upload started. Please wait.");
 
     const result = await api(
       "/api/plans/" + encodeURIComponent(id) + "/test-upload",
@@ -287,6 +373,7 @@ async function testUpload(id) {
   }
 }
 
+// LOAD PLANS
 async function loadPlans() {
   const box = $("plans");
   box.innerHTML = '<div class="small">Loading...</div>';
@@ -322,7 +409,10 @@ async function loadPlans() {
       badge.textContent = "Status: " + (plan.status || "unknown");
       item.appendChild(badge);
 
-      if (plan.status === "scheduled" && (plan.platforms || []).includes("YouTube")) {
+      if (
+        plan.status === "scheduled" &&
+        (plan.platforms || []).includes("YouTube")
+      ) {
         const test = document.createElement("button");
         test.textContent = "🔒 Private Test Upload";
         test.className = "test";
@@ -342,10 +432,10 @@ async function loadPlans() {
       }
 
       if (plan.thumbnailError) {
-        const thumbError = document.createElement("p");
-        thumbError.className = "small";
-        thumbError.textContent = "Thumbnail warning: " + plan.thumbnailError;
-        item.appendChild(thumbError);
+        const warning = document.createElement("p");
+        warning.className = "small";
+        warning.textContent = "Thumbnail warning: " + plan.thumbnailError;
+        item.appendChild(warning);
       }
 
       if (plan.error) {
@@ -376,6 +466,7 @@ async function loadPlans() {
   }
 }
 
+// EDIT PLAN
 function editPlan(id) {
   const plan = currentPlans.find(p => p.id === id);
   if (!plan) return;
@@ -388,9 +479,7 @@ function editPlan(id) {
   $("contentType").value = plan.contentType || "Video";
 
   const d = new Date(plan.dateTime);
-  const local = new Date(
-    d.getTime() - d.getTimezoneOffset() * 60000
-  );
+  const local = new Date(d.getTime() - d.getTimezoneOffset() * 60000);
 
   $("date").value = local.toISOString().slice(0,10);
   $("time").value = local.toISOString().slice(11,16);
@@ -401,10 +490,10 @@ function editPlan(id) {
 
   $("saveBtn").textContent = "💾 Update Publishing Plan";
   showMessage("Edit the details and press Update Publishing Plan.");
-
   window.scrollTo({top:0,behavior:"smooth"});
 }
 
+// CANCEL PLAN
 async function cancelPlan(id) {
   if (!confirm("Are you sure you want to cancel this plan?")) return;
 
@@ -422,10 +511,195 @@ async function cancelPlan(id) {
   }
 }
 
+// SHORTS MODE
+$("shortsMode").addEventListener("change", () => {
+  const manual = $("shortsMode").value === "manual";
+  $("manualOptions").style.display = manual ? "block" : "none";
+  $("aiOptions").style.display = manual ? "none" : "block";
+});
+
+// SHORTS UPLOAD WITH PROGRESS
+function uploadShortsVideo(formData) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+
+    xhr.open("POST", "/api/shorts");
+    xhr.responseType = "json";
+
+    xhr.upload.onprogress = event => {
+      if (event.lengthComputable) {
+        const percent = Math.round(
+          event.loaded / event.total * 100
+        );
+
+        $("shortsProgressBar").style.width = percent + "%";
+        $("shortsProgressText").textContent =
+          "Uploading video: " + percent + "%";
+      }
+    };
+
+    xhr.onload = () => {
+      const data = xhr.response || {};
+
+      if (xhr.status >= 200 && xhr.status < 300) {
+        resolve(data);
+      } else {
+        reject(new Error(data.error || "Upload failed."));
+      }
+    };
+
+    xhr.onerror = () => reject(new Error("Network upload failed."));
+    xhr.ontimeout = () => reject(new Error("Upload timed out."));
+
+    xhr.timeout = 0;
+    xhr.send(formData);
+  });
+}
+
+// CREATE SHORTS
+$("createShortsBtn").addEventListener("click", async () => {
+  const video = $("shortsVideo").files[0];
+
+  if (!video) {
+    $("shortsMessage").textContent = "Please select a video first.";
+    return;
+  }
+
+  if (video.size > 1024 * 1024 * 1024) {
+    $("shortsMessage").textContent = "Maximum video size is 1 GB.";
+    return;
+  }
+
+  const mode = $("shortsMode").value;
+
+  const formData = new FormData();
+  formData.append("video", video);
+  formData.append("mode", mode);
+  formData.append("count", $("shortsCount").value);
+  formData.append("duration", $("shortsDuration").value);
+
+  if (mode === "manual") {
+    formData.append("start", $("manualStart").value);
+    formData.append("end", $("manualEnd").value);
+  }
+
+  $("createShortsBtn").disabled = true;
+  $("shortsResults").innerHTML = "";
+  $("shortsProgressBar").style.width = "0%";
+  $("shortsProgressText").textContent = "";
+  $("shortsMessage").textContent = "Starting upload...";
+
+  try {
+    const result = await uploadShortsVideo(formData);
+
+    if (!result.jobId) {
+      throw new Error("Server did not return a job ID.");
+    }
+
+    $("shortsMessage").textContent =
+      "Video uploaded. AI processing started.";
+
+    pollShortsJob(result.jobId);
+
+  } catch (error) {
+    $("shortsMessage").textContent = "❌ " + error.message;
+    $("createShortsBtn").disabled = false;
+  }
+});
+
+// POLL SHORTS STATUS
+function pollShortsJob(jobId) {
+  if (shortsPolling) clearInterval(shortsPolling);
+
+  shortsPolling = setInterval(async () => {
+    try {
+      const job = await api("/api/shorts/" + encodeURIComponent(jobId));
+
+      $("shortsProgressBar").style.width =
+        (job.progress || 0) + "%";
+
+      $("shortsProgressText").textContent =
+        "Processing: " + (job.progress || 0) + "%";
+
+      $("shortsMessage").textContent =
+        "Status: " + job.status;
+
+      if (job.status === "completed") {
+        clearInterval(shortsPolling);
+        shortsPolling = null;
+        $("createShortsBtn").disabled = false;
+        $("shortsMessage").textContent =
+          "✅ Shorts creation completed!";
+        showShortsResults(jobId, job.outputs || []);
+      }
+
+      if (job.status === "failed") {
+        clearInterval(shortsPolling);
+        shortsPolling = null;
+        $("createShortsBtn").disabled = false;
+        $("shortsMessage").textContent =
+          "❌ " + (job.error || "Processing failed.");
+      }
+
+    } catch (error) {
+      clearInterval(shortsPolling);
+      shortsPolling = null;
+      $("createShortsBtn").disabled = false;
+      $("shortsMessage").textContent =
+        "Status check failed: " + error.message;
+    }
+  }, 5000);
+}
+
+// SHOW SHORTS
+function showShortsResults(jobId, outputs) {
+  const box = $("shortsResults");
+  box.innerHTML = "";
+
+  if (!outputs.length) {
+    box.textContent = "No Shorts were generated.";
+    return;
+  }
+
+  outputs.forEach((output, index) => {
+    const item = document.createElement("div");
+    item.className = "result";
+
+    const title = document.createElement("h3");
+    title.textContent = "Short " + (index + 1);
+    item.appendChild(title);
+
+    const reason = document.createElement("p");
+    reason.className = "small";
+    reason.textContent = output.reason || "Selected clip";
+    item.appendChild(reason);
+
+    const video = document.createElement("video");
+    video.controls = true;
+    video.playsInline = true;
+    video.src =
+      "/api/shorts/" + encodeURIComponent(jobId) +
+      "/download/" + encodeURIComponent(output.fileName);
+
+    item.appendChild(video);
+
+    const download = document.createElement("a");
+    download.href = video.src;
+    download.download = output.fileName;
+    download.textContent = "⬇️ Download Short";
+    item.appendChild(document.createElement("br"));
+    item.appendChild(download);
+
+    box.appendChild(item);
+  });
+}
+
+// SYSTEM STATUS
 async function checkStatus() {
   $("health").textContent = "Checking backend...";
   $("youtube").textContent = "Checking YouTube...";
   $("publishing").textContent = "Checking publishing setting...";
+  $("shortsSystem").textContent = "Checking AI Shorts...";
 
   try {
     const health = await api("/api/health");
@@ -433,7 +707,7 @@ async function checkStatus() {
     $("health").textContent =
       "Backend: " + health.status +
       " | Upload API: " + health.uploadApi +
-      " | Scheduler: " + health.scheduler;
+      " | Limit: " + (health.uploadLimit || "Unknown");
 
     $("publishing").textContent =
       "Automatic publishing: " +
@@ -446,10 +720,16 @@ async function checkStatus() {
       (yt.connected ? "Connected" : "Not connected") +
       " | " + yt.message;
 
+    $("shortsSystem").textContent =
+      "AI Shorts API: " + (health.shortsApi || "Unknown") +
+      " | OpenAI configured: " + (health.openAIConfigured ? "Yes" : "No") +
+      " | FFmpeg configured: " + (health.ffmpegConfigured ? "Yes" : "Check server");
+
   } catch (error) {
     $("health").textContent = "Status check failed: " + error.message;
     $("youtube").textContent = "YouTube status unavailable.";
     $("publishing").textContent = "Not confirmed.";
+    $("shortsSystem").textContent = "AI Shorts status unavailable.";
   }
 }
 
@@ -457,5 +737,6 @@ setDefaultDateTime();
 loadPlans();
 checkStatus();
 </script>
+
 </body>
-</html>
+  </html>
