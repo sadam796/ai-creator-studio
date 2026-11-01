@@ -438,7 +438,7 @@ function updateJob(job, updates) {
   job.updatedAt = new Date().toISOString();
 }
 
-async function renderShort(
+ async function renderShort(
   input,
   output,
   start,
@@ -465,8 +465,10 @@ async function renderShort(
     "-t", String(duration),
     "-vf", videoFilter,
     "-c:v", "libx264",
-    "-preset", "veryfast",
+    "-threads:v", "1",
+    "-preset", "ultrafast",
     "-crf", "23",
+    "-pix_fmt", "yuv420p",
     "-c:a", "aac",
     "-b:a", "128k",
     "-movflags", "+faststart",
