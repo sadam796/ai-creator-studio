@@ -1,9 +1,10 @@
+"use strict";
+
 const express = require("express");
 const multer = require("multer");
 const path = require("path");
 const fs = require("fs");
 const crypto = require("crypto");
-const cron = require("node-cron");
 const { google } = require("googleapis");
 const OpenAI = require("openai");
 const { spawn } = require("child_process");
@@ -14,10 +15,14 @@ const PORT = process.env.PORT || 3000;
 const DATA_DIR = path.join(__dirname, "data");
 const UPLOAD_DIR = path.join(__dirname, "uploads");
 const SHORTS_DIR = path.join(__dirname, "shorts");
+
 const PLANS_FILE = path.join(DATA_DIR, "plans.json");
 const TOKEN_FILE = path.join(DATA_DIR, "youtube-token.json");
 
-const MAX_VIDEO_SIZE = 5 * 1024 * 1024 * 1024; // 5 GB upload limit
+const MAX_VIDEO_SIZE = 5 * 1024 * 1024 * 1024;
+
+const FFMPEG = process.env.FFMPEG_PATH || "ffmpeg";
+const FFPROBE = process.env.FFPROBE_PATH || "ffprobe";
 
 fs.mkdirSync(DATA_DIR, { recursive: true });
 fs.mkdirSync(UPLOAD_DIR, { recursive: true });
@@ -27,14 +32,17 @@ if (!fs.existsSync(PLANS_FILE)) {
   fs.writeFileSync(PLANS_FILE, "[]");
 }
 
-app.use(express.json({ limit: "1mb" }));
+app.use(express.json({ limit: "2mb" }));
 
-// ADMIN AUTH
+// ==========================================
+// ADMIN AUTHENTICATION
+// ==========================================
+
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD;
 
 function adminAuth(req, res, next) {
   if (!ADMIN_PASSWORD) {
-    return res.status(503).send("Admin password is not configured.");
+    return res.status(503).send("ADMIN_PASSWORD is not configured.");
   }
 
   const header = req.headers.authorization || "";
@@ -54,20 +62,26 @@ function adminAuth(req, res, next) {
   }
 
   const separator = credentials.indexOf(":");
-  const password = separator >= 0 ? credentials.slice(separator + 1) : "";
+  const password = separator >= 0
+    ? credentials.slice(separator + 1)
+    : "";
 
   const a = Buffer.from(password);
   const b = Buffer.from(ADMIN_PASSWORD);
 
-  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
+  if (
+    a.length !== b.length ||
+    !crypto.timingSafeEqual(a, b)
+  ) {
     res.set("WWW-Authenticate", 'Basic realm="Creator Auto Publisher"');
-    return res.status(401).send("Wrong admin password.");
+    return res.status(401).send("Wrong password.");
   }
 
   next();
 }
 
-// PUBLIC ROUTES
+// Health and OAuth callback are public.
+// All other routes require admin authentication.
 app.use((req, res, next) => {
   if (
     req.path === "/api/health" ||
@@ -78,7 +92,11 @@ app.use((req, res, next) => {
 
   adminAuth(req, res, next);
 });
-// GOOGLE SETTINGS
+
+// ==========================================
+// GOOGLE / YOUTUBE CONFIGURATION
+// ==========================================
+
 const CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
 const CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
 
@@ -86,7 +104,12 @@ const BASE_URL =
   process.env.APP_BASE_URL ||
   "https://lightseagreen-skunk-987290.hostingersite.com";
 
-const REDIRECT_URI = BASE_URL + "/auth/youtube/callback";
+const REDIRECT_URI =
+  BASE_URL + "/auth/youtube/callback";
+
+function oauthConfigured() {
+  return Boolean(CLIENT_ID && CLIENT_SECRET);
+}
 
 function readJSON(file, fallback) {
   try {
@@ -101,7 +124,10 @@ function readPlans() {
 }
 
 function savePlans(plans) {
-  fs.writeFileSync(PLANS_FILE, JSON.stringify(plans, null, 2));
+  fs.writeFileSync(
+    PLANS_FILE,
+    JSON.stringify(plans, null, 2)
+  );
 }
 
 function readTokens() {
@@ -121,13 +147,11 @@ function saveTokens(tokens) {
     saved.refresh_token = previous.refresh_token;
   }
 
-  fs.writeFileSync(TOKEN_FILE, JSON.stringify(saved, null, 2), {
-    mode: 0o600
-  });
-}
-
-function oauthConfigured() {
-  return Boolean(CLIENT_ID && CLIENT_SECRET);
+  fs.writeFileSync(
+    TOKEN_FILE,
+    JSON.stringify(saved, null, 2),
+    { mode: 0o600 }
+  );
 }
 
 function getOAuthClient() {
@@ -148,21 +172,29 @@ function getOAuthClient() {
   }
 
   oauth.setCredentials(tokens);
+
   return oauth;
 }
 
-// UPLOAD STORAGE
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, UPLOAD_DIR),
+// ==========================================
+// FILE UPLOAD CONFIGURATION
+// ==========================================
 
-  filename: (req, file, cb) => {
-    const ext = path.extname(file.originalname).slice(0, 12);
-    cb(null, crypto.randomUUID() + ext);
-  }
-});
+function makeStorage(prefix) {
+  return multer.diskStorage({
+    destination: (req, file, cb) => {
+      cb(null, UPLOAD_DIR);
+    },
+
+    filename: (req, file, cb) => {
+      const ext = path.extname(file.originalname).slice(0, 12);
+      cb(null, prefix + crypto.randomUUID() + ext);
+    }
+  });
+}
 
 const upload = multer({
-  storage,
+  storage: makeStorage("upload-"),
   limits: {
     fileSize: MAX_VIDEO_SIZE,
     files: 2
@@ -179,17 +211,8 @@ const upload = multer({
   }
 });
 
-const shortsStorage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, UPLOAD_DIR),
-
-  filename: (req, file, cb) => {
-    const ext = path.extname(file.originalname).slice(0, 12);
-    cb(null, "shorts-" + crypto.randomUUID() + ext);
-  }
-});
-
 const shortsUpload = multer({
-  storage: shortsStorage,
+  storage: makeStorage("shorts-"),
   limits: {
     fileSize: MAX_VIDEO_SIZE,
     files: 1
@@ -203,51 +226,58 @@ const shortsUpload = multer({
   }
 });
 
-// HEALTH
+// ==========================================
+// HEALTH API
+// ==========================================
+
 app.get("/api/health", (req, res) => {
   res.json({
     status: "online",
     app: "Creator Auto Publisher",
+    uploadLimit: "5 GB",
     adminPasswordConfigured: Boolean(ADMIN_PASSWORD),
     googleOAuthConfigured: oauthConfigured(),
-    uploadApi: "available",
-    uploadLimit: "5 GB",
-    scheduler: "running",
-    youtubePublishingEnabled:
-      process.env.ENABLE_YOUTUBE_PUBLISHING === "true",
-    shortsApi: "available",
-    ffmpegConfigured: Boolean(process.env.FFMPEG_PATH),
+    youtubeConnected: Boolean(
+      readTokens() && readTokens().refresh_token
+    ),
     openAIConfigured: Boolean(process.env.OPENAI_API_KEY),
-    note: "Manual YouTube test uploads always use private visibility."
+    ffmpeg: FFMPEG,
+    ffprobe: FFPROBE,
+    shortsApi: "available",
+    automaticPublishing: false,
+    message: "Automatic YouTube publishing is disabled."
   });
 });
 
-// YOUTUBE STATUS
+// ==========================================
+// YOUTUBE AUTHENTICATION
+// ==========================================
+
+const oauthStates = new Map();
+
 app.get("/api/youtube/status", (req, res) => {
   const tokens = readTokens();
 
   res.json({
     configured: oauthConfigured(),
-    connected: Boolean(tokens && tokens.refresh_token),
-    message:
-      tokens && tokens.refresh_token
-        ? "YouTube authorization tokens are stored."
-        : "YouTube account has not been connected."
+    connected: Boolean(tokens && tokens.refresh_token)
   });
 });
 
-// GOOGLE AUTH
-const oauthStates = new Map();
-
 app.get("/auth/youtube/start", (req, res) => {
   if (!oauthConfigured()) {
-    return res.status(503).send("Google OAuth is not configured.");
+    return res.status(503).send(
+      "Google OAuth is not configured."
+    );
   }
 
   const state = crypto.randomBytes(32).toString("hex");
+
   oauthStates.set(state, Date.now());
 
-  setTimeout(() => oauthStates.delete(state), 10 * 60 * 1000).unref();
+  setTimeout(() => {
+    oauthStates.delete(state);
+  }, 10 * 60 * 1000).unref();
 
   const params = new URLSearchParams({
     client_id: CLIENT_ID,
@@ -263,14 +293,17 @@ app.get("/auth/youtube/start", (req, res) => {
   });
 
   res.redirect(
-    "https://accounts.google.com/o/oauth2/v2/auth?" + params.toString()
+    "https://accounts.google.com/o/oauth2/v2/auth?" +
+    params.toString()
   );
 });
 
 app.get("/auth/youtube/callback", async (req, res) => {
   try {
     if (req.query.error) {
-      return res.status(400).send("Google authorization was cancelled.");
+      return res.status(400).send(
+        "Google authorization was cancelled."
+      );
     }
 
     const { code, state } = req.query;
@@ -280,7 +313,9 @@ app.get("/auth/youtube/callback", async (req, res) => {
       typeof state !== "string" ||
       !oauthStates.has(state)
     ) {
-      return res.status(400).send("Authorization request expired.");
+      return res.status(400).send(
+        "Authorization request expired."
+      );
     }
 
     oauthStates.delete(state);
@@ -291,23 +326,29 @@ app.get("/auth/youtube/callback", async (req, res) => {
       REDIRECT_URI
     );
 
-    const { tokens } = await oauth.getToken(code);
-    saveTokens(tokens);
+    const result = await oauth.getToken(code);
+
+    saveTokens(result.tokens);
 
     res.send(`
-      <h2>YouTube authorization successful!</h2>
-      <p>Tokens have been saved.</p>
-      <p>Automatic publishing remains separately controlled.</p>
+      <h2>YouTube connected successfully!</h2>
+      <p>Your authorization tokens have been saved.</p>
+      <p>Automatic publishing remains OFF.</p>
       <a href="/">Return to dashboard</a>
     `);
-  } catch (err) {
-    console.error("OAuth callback error:", err.message);
-    res.status(500).send("YouTube authorization failed.");
+
+  } catch (error) {
+    console.error("OAuth error:", error.message);
+
+    res.status(500).send(
+      "YouTube authorization failed."
+    );
   }
 });
+
+// ==========================================
 // FFMPEG HELPERS
-const FFMPEG = process.env.FFMPEG_PATH || "ffmpeg";
-const FFPROBE = process.env.FFPROBE_PATH || "ffprobe";
+// ==========================================
 
 function runCommand(command, args) {
   return new Promise((resolve, reject) => {
@@ -319,40 +360,50 @@ function runCommand(command, args) {
 
     child.stderr.on("data", data => {
       errorOutput += data.toString();
-      if (errorOutput.length > 12000) {
-        errorOutput = errorOutput.slice(-12000);
+
+      if (errorOutput.length > 15000) {
+        errorOutput = errorOutput.slice(-15000);
       }
     });
 
     child.on("error", reject);
 
     child.on("close", code => {
-      if (code === 0) return resolve();
-      reject(new Error(errorOutput || `${command} failed (${code})`));
+      if (code === 0) {
+        return resolve();
+      }
+
+      reject(
+        new Error(errorOutput || command + " failed.")
+      );
     });
   });
 }
 
 async function getVideoDuration(file) {
-  const args = [
-    "-v", "error",
-    "-show_entries", "format=duration",
-    "-of", "default=noprint_wrappers=1:nokey=1",
-    file
-  ];
-
   return new Promise((resolve, reject) => {
-    const child = spawn(FFPROBE, args);
+    const child = spawn(FFPROBE, [
+      "-v", "error",
+      "-show_entries", "format=duration",
+      "-of", "default=noprint_wrappers=1:nokey=1",
+      file
+    ]);
+
     let output = "";
 
-    child.stdout.on("data", data => output += data.toString());
+    child.stdout.on("data", data => {
+      output += data.toString();
+    });
+
     child.on("error", reject);
 
     child.on("close", code => {
       const duration = Number(output.trim());
 
       if (code !== 0 || !Number.isFinite(duration)) {
-        return reject(new Error("Could not read video duration."));
+        return reject(
+          new Error("Could not read video duration.")
+        );
       }
 
       resolve(duration);
@@ -362,7 +413,9 @@ async function getVideoDuration(file) {
 
 function getOpenAI() {
   if (!process.env.OPENAI_API_KEY) {
-    throw new Error("AI mode requires OPENAI_API_KEY. Manual mode does not.");
+    throw new Error(
+      "AI mode requires OPENAI_API_KEY. Manual mode does not."
+    );
   }
 
   return new OpenAI({
@@ -370,24 +423,47 @@ function getOpenAI() {
   });
 }
 
-// SHORTS JOBS
+// ==========================================
+// SHORTS JOB MANAGEMENT
+// ==========================================
+
 const shortsJobs = new Map();
 const shortsQueue = [];
+
 let shortsBusy = false;
 
 function updateJob(job, updates) {
   Object.assign(job, updates);
+
   job.updatedAt = new Date().toISOString();
 }
 
-async function renderShort(input, output, start, duration) {
+async function renderShort(
+  input,
+  output,
+  start,
+  duration,
+  subtitleFile = null
+) {
+  let videoFilter =
+    "scale=1080:1920:force_original_aspect_ratio=increase," +
+    "crop=1080:1920";
+
+  if (subtitleFile) {
+    const escaped = subtitleFile
+      .replace(/\\/g, "/")
+      .replace(/:/g, "\\:")
+      .replace(/'/g, "\\'");
+
+    videoFilter += ",subtitles='" + escaped + "'";
+  }
+
   const args = [
     "-y",
     "-ss", String(start),
     "-i", input,
     "-t", String(duration),
-    "-vf",
-    "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920",
+    "-vf", videoFilter,
     "-c:v", "libx264",
     "-preset", "veryfast",
     "-crf", "23",
@@ -400,9 +476,148 @@ async function renderShort(input, output, start, duration) {
   await runCommand(FFMPEG, args);
 }
 
-// MANUAL MODE
+// ==========================================
+// ROMAN URDU CAPTIONS
+// ==========================================
+
+function srtTime(seconds) {
+  const ms = Math.max(0, Math.round(seconds * 1000));
+
+  const hours = Math.floor(ms / 3600000);
+  const minutes = Math.floor((ms % 3600000) / 60000);
+  const secs = Math.floor((ms % 60000) / 1000);
+  const millis = ms % 1000;
+
+  return (
+    String(hours).padStart(2, "0") + ":" +
+    String(minutes).padStart(2, "0") + ":" +
+    String(secs).padStart(2, "0") + "," +
+    String(millis).padStart(3, "0")
+  );
+}
+
+async function createRomanUrduSRT(
+  openai,
+  input,
+  jobId
+) {
+  const audioFile = path.join(
+    SHORTS_DIR,
+    jobId + "-captions.mp3"
+  );
+
+  const srtFile = path.join(
+    SHORTS_DIR,
+    jobId + "-captions.srt"
+  );
+
+  await runCommand(FFMPEG, [
+    "-y",
+    "-i", input,
+    "-vn",
+    "-ac", "1",
+    "-ar", "16000",
+    "-b:a", "48k",
+    audioFile
+  ]);
+
+  const stats = fs.statSync(audioFile);
+
+  if (stats.size > 24 * 1024 * 1024) {
+    fs.unlink(audioFile, () => {});
+
+    throw new Error(
+      "Caption audio exceeds the transcription limit. Use a shorter video."
+    );
+  }
+
+  const transcription =
+    await openai.audio.transcriptions.create({
+      file: fs.createReadStream(audioFile),
+      model: "whisper-1",
+      language: "ur",
+      response_format: "verbose_json"
+    });
+
+  const segments = transcription.segments || [];
+
+  if (!segments.length) {
+    throw new Error(
+      "No speech was found for captions."
+    );
+  }
+
+  const translated =
+    await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      response_format: { type: "json_object" },
+      messages: [
+        {
+          role: "system",
+          content:
+            "Convert each Urdu speech segment into natural Roman Urdu. Keep the same order and return JSON with an array called captions. Each item must have an index and text. Do not use Urdu script. Do not translate into English."
+        },
+        {
+          role: "user",
+          content: JSON.stringify(
+            segments.map((segment, index) => ({
+              index,
+              text: segment.text
+            }))
+          )
+        }
+      ]
+    });
+
+  const data = JSON.parse(
+    translated.choices[0].message.content || "{}"
+  );
+
+  if (!Array.isArray(data.captions)) {
+    throw new Error(
+      "Roman Urdu caption conversion failed."
+    );
+  }
+
+  const captionMap = new Map();
+
+  data.captions.forEach(item => {
+    captionMap.set(
+      Number(item.index),
+      String(item.text || "")
+    );
+  });
+
+  let srt = "";
+
+  segments.forEach((segment, index) => {
+    const text = captionMap.get(index);
+
+    if (!text) return;
+
+    srt +=
+      (index + 1) + "\n" +
+      srtTime(segment.start) + " --> " +
+      srtTime(segment.end) + "\n" +
+      text.replace(/\n/g, " ") + "\n\n";
+  });
+
+  fs.writeFileSync(srtFile, srt, "utf8");
+
+  fs.unlink(audioFile, () => {});
+
+  return {
+    srtFile,
+    segments
+  };
+}
+
+// ==========================================
+// MANUAL SHORTS MODE
+// ==========================================
+
 async function processManualShort(job) {
-  const duration = await getVideoDuration(job.input);
+  const videoDuration = await getVideoDuration(job.input);
 
   const start = Number(job.start);
   const end = Number(job.end);
@@ -412,25 +627,63 @@ async function processManualShort(job) {
     !Number.isFinite(end) ||
     start < 0 ||
     end <= start ||
-    end > duration
+    end > videoDuration
   ) {
-    throw new Error("Invalid trim times. Check the start and end times.");
+    throw new Error(
+      "Invalid trim times. Check start and end."
+    );
   }
 
   if (end - start > 90) {
-    throw new Error("Manual Shorts duration cannot exceed 90 seconds.");
+    throw new Error(
+      "Manual Short cannot exceed 90 seconds."
+    );
+  }
+
+  let subtitleFile = null;
+
+  if (job.captions) {
+    updateJob(job, {
+      status: "processing",
+      progress: 15,
+      message: "Creating Roman Urdu captions..."
+    });
+
+    const openai = getOpenAI();
+
+    const captionData = await createRomanUrduSRT(
+      openai,
+      job.input,
+      job.id
+    );
+
+    subtitleFile = captionData.srtFile;
   }
 
   const filename = "short-" + job.id + ".mp4";
-  const output = path.join(SHORTS_DIR, filename);
+
+  const output = path.join(
+    SHORTS_DIR,
+    filename
+  );
 
   updateJob(job, {
     status: "processing",
-    progress: 20,
-    message: "Creating your manual Short..."
+    progress: 50,
+    message: "Rendering your Short..."
   });
 
-  await renderShort(job.input, output, start, end - start);
+  await renderShort(
+    job.input,
+    output,
+    start,
+    end - start,
+    subtitleFile
+  );
+
+  if (subtitleFile) {
+    fs.unlink(subtitleFile, () => {});
+  }
 
   updateJob(job, {
     status: "completed",
@@ -440,23 +693,29 @@ async function processManualShort(job) {
   });
 }
 
-// AI MODE
+// ==========================================
+// AI SHORTS MODE
+// ==========================================
+
 async function processAIShorts(job) {
   const openai = getOpenAI();
 
   updateJob(job, {
     status: "processing",
     progress: 5,
-    message: "Reading video duration..."
+    message: "Checking video..."
   });
 
-  const duration = await getVideoDuration(job.input);
+  const videoDuration = await getVideoDuration(job.input);
 
-  const audioFile = path.join(SHORTS_DIR, job.id + "-audio.mp3");
+  const audioFile = path.join(
+    SHORTS_DIR,
+    job.id + "-audio.mp3"
+  );
 
   updateJob(job, {
     progress: 10,
-    message: "Extracting audio for AI analysis..."
+    message: "Extracting audio..."
   });
 
   await runCommand(FFMPEG, [
@@ -472,27 +731,34 @@ async function processAIShorts(job) {
   const audioStats = fs.statSync(audioFile);
 
   if (audioStats.size > 24 * 1024 * 1024) {
+    fs.unlink(audioFile, () => {});
+
     throw new Error(
-      "Audio is larger than the transcription limit. Use a shorter video."
+      "Audio exceeds the transcription limit. Use a shorter video."
     );
   }
 
   updateJob(job, {
     progress: 25,
-    message: "AI is transcribing the video..."
+    message: "AI is transcribing your video..."
   });
 
-  const transcription = await openai.audio.transcriptions.create({
-    file: fs.createReadStream(audioFile),
-    model: "whisper-1",
-    language: "ur",
-    response_format: "verbose_json"
-  });
+  const transcription =
+    await openai.audio.transcriptions.create({
+      file: fs.createReadStream(audioFile),
+      model: "whisper-1",
+      language: "ur",
+      response_format: "verbose_json"
+    });
+
+  fs.unlink(audioFile, () => {});
 
   const segments = transcription.segments || [];
 
   if (!segments.length) {
-    throw new Error("AI could not find timestamped speech in this video.");
+    throw new Error(
+      "AI could not find timestamped speech."
+    );
   }
 
   updateJob(job, {
@@ -500,65 +766,84 @@ async function processAIShorts(job) {
     message: "AI is selecting interesting moments..."
   });
 
-  const count = Number(job.count);
-  const clipDuration = Number(job.duration);
-
-  const transcriptText = segments.map(segment => ({
+  const transcript = segments.map(segment => ({
     start: segment.start,
     end: segment.end,
     text: segment.text
   }));
 
-  const response = await openai.chat.completions.create({
-    model: "gpt-4o-mini",
-    response_format: { type: "json_object" },
-    messages: [
-      {
-        role: "system",
-        content:
-          "You are a video editor. Select engaging, self-contained moments from this timestamped transcript. Return JSON with a clips array. Each clip must have start and end in seconds, and a short title. Do not invent timestamps. Respect the requested duration."
-      },
-      {
-        role: "user",
-        content: JSON.stringify({
-          videoDuration: duration,
-          requestedClips: count,
-          requestedClipDuration: clipDuration,
-          transcript: transcriptText
-        })
-      }
-    ]
-  });
+  const response =
+    await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      response_format: { type: "json_object" },
+      messages: [
+        {
+          role: "system",
+          content:
+            "You are an expert short-video editor. Select engaging, self-contained moments from the timestamped transcript. Return JSON with a clips array. Every clip must have start, end and title. Use only supplied timestamps. Do not invent timestamps. Respect requested clip duration."
+        },
+        {
+          role: "user",
+          content: JSON.stringify({
+            videoDuration,
+            requestedClips: job.count,
+            requestedClipDuration: job.duration,
+            transcript
+          })
+        }
+      ]
+    });
 
   const result = JSON.parse(
     response.choices[0].message.content || "{}"
   );
 
-  if (!Array.isArray(result.clips) || !result.clips.length) {
-    throw new Error("AI did not return any usable clips.");
+  if (
+    !Array.isArray(result.clips) ||
+    result.clips.length === 0
+  ) {
+    throw new Error(
+      "AI did not return any usable clips."
+    );
   }
 
-  const clips = result.clips.slice(0, count);
+  const clips = result.clips.slice(0, job.count);
 
-  updateJob(job, {
-    progress: 60,
-    message: "Rendering AI-selected Shorts..."
-  });
+  let subtitleFile = null;
+
+  if (job.captions) {
+    updateJob(job, {
+      progress: 55,
+      message: "Preparing Roman Urdu captions..."
+    });
+
+    const captionData = await createRomanUrduSRT(
+      openai,
+      job.input,
+      job.id
+    );
+
+    subtitleFile = captionData.srtFile;
+  }
 
   const outputs = [];
 
   for (let i = 0; i < clips.length; i++) {
     const clip = clips[i];
 
-    const start = Math.max(0, Number(clip.start));
+    const start = Number(clip.start);
+
+    if (!Number.isFinite(start) || start < 0) {
+      continue;
+    }
+
     const end = Math.min(
-      duration,
+      videoDuration,
       Number(clip.end),
-      start + clipDuration
+      start + job.duration
     );
 
     if (
-      !Number.isFinite(start) ||
       !Number.isFinite(end) ||
       end <= start ||
       end - start < 5
@@ -566,20 +851,41 @@ async function processAIShorts(job) {
       continue;
     }
 
-    const filename = `short-${job.id}-${i + 1}.mp4`;
-    const output = path.join(SHORTS_DIR, filename);
+    const filename =
+      "short-" + job.id + "-" + (i + 1) + ".mp4";
 
-    await renderShort(job.input, output, start, end - start);
+    const output = path.join(
+      SHORTS_DIR,
+      filename
+    );
+
+    await renderShort(
+      job.input,
+      output,
+      start,
+      end - start,
+      subtitleFile
+    );
+
     outputs.push(filename);
 
     updateJob(job, {
-      progress: 60 + Math.round(((i + 1) / clips.length) * 35),
-      message: `Rendering Short ${i + 1} of ${clips.length}...`
+      progress:
+        60 + Math.round(((i + 1) / clips.length) * 35),
+      message:
+        "Rendering Short " + (i + 1) +
+        " of " + clips.length + "..."
     });
   }
 
+  if (subtitleFile) {
+    fs.unlink(subtitleFile, () => {});
+  }
+
   if (!outputs.length) {
-    throw new Error("AI selected no valid video clips.");
+    throw new Error(
+      "AI selected no valid clips."
+    );
   }
 
   updateJob(job, {
@@ -588,20 +894,21 @@ async function processAIShorts(job) {
     message: "Your AI Shorts are ready.",
     outputs
   });
-
-  try {
-    fs.unlinkSync(audioFile);
-  } catch {}
 }
 
-// JOB PROCESSOR
+// ==========================================
+// JOB QUEUE
+// ==========================================
+
 async function processShorts(job) {
   if (shortsBusy) {
     shortsQueue.push(job);
+
     updateJob(job, {
       status: "queued",
-      message: "Waiting for another job to finish."
+      message: "Waiting for another job..."
     });
+
     return;
   }
 
@@ -613,110 +920,167 @@ async function processShorts(job) {
     } else {
       await processAIShorts(job);
     }
+
   } catch (error) {
-    console.error("Shorts processing error:", error);
+    console.error(
+      "Shorts processing error:",
+      error
+    );
 
     updateJob(job, {
       status: "failed",
-      message: error.message || "Shorts processing failed."
+      message: error.message || "Processing failed."
     });
+
   } finally {
     shortsBusy = false;
 
-    if (shortsQueue.length) {
+    if (shortsQueue.length > 0) {
       const nextJob = shortsQueue.shift();
-      processShorts(nextJob);
+
+      setImmediate(() => {
+        processShorts(nextJob);
+      });
+    }
+
+    // Remove original input after processing.
+    if (job.input && fs.existsSync(job.input)) {
+      fs.unlink(job.input, () => {});
     }
   }
-    }
+}
+
+// ==========================================
 // SHORTS API
-app.post("/api/shorts", shortsUpload.single("video"), (req, res) => {
-  try {
-    if (!req.file) {
-      return res.status(400).json({ error: "Please upload a video." });
-    }
+// ==========================================
 
-    const mode = req.body.mode === "manual" ? "manual" : "ai";
-    const id = crypto.randomUUID();
+app.post(
+  "/api/shorts",
+  shortsUpload.single("video"),
+  (req, res) => {
+    try {
+      if (!req.file) {
+        return res.status(400).json({
+          error: "Please upload a video."
+        });
+      }
 
-    const job = {
-      id,
-      input: req.file.path,
-      originalName: req.file.originalname,
-      mode,
-      count: Math.min(15, Math.max(1, Number(req.body.count) || 5)),
-      duration: Number(req.body.duration) || 30,
-      start: Number(req.body.start) || 0,
-      end: Number(req.body.end) || 60,
-      captions: req.body.captions === "true",
-      status: "queued",
-      progress: 0,
-      message: "Job received.",
-      outputs: [],
-      createdAt: new Date().toISOString()
-    };
+      const mode =
+        req.body.mode === "manual" ? "manual" : "ai";
 
-    if (
-      mode === "ai" &&
-      (![5, 10, 15].includes(job.count) ||
-       ![30, 45, 60].includes(job.duration))
-    ) {
-      fs.unlink(req.file.path, () => {});
-      return res.status(400).json({
-        error: "AI mode supports 5, 10 or 15 clips and 30, 45 or 60 seconds."
+      const id = crypto.randomUUID();
+
+      const count = Number(req.body.count) || 5;
+      const clipDuration = Number(req.body.duration) || 30;
+
+      const job = {
+        id,
+        input: req.file.path,
+        originalName: req.file.originalname,
+        mode,
+        count,
+        duration: clipDuration,
+        start: Number(req.body.start ?? 0),
+        end: Number(req.body.end ?? 60),
+        captions: req.body.captions === "true",
+        status: "queued",
+        progress: 0,
+        message: "Job received.",
+        outputs: [],
+        createdAt: new Date().toISOString()
+      };
+
+      if (
+        mode === "ai" &&
+        (
+          ![5, 10, 15].includes(count) ||
+          ![30, 45, 60].includes(clipDuration)
+        )
+      ) {
+        fs.unlink(req.file.path, () => {});
+
+        return res.status(400).json({
+          error:
+            "AI mode supports 5, 10 or 15 clips and 30, 45 or 60 seconds."
+        });
+      }
+
+      if (job.captions && !process.env.OPENAI_API_KEY) {
+        fs.unlink(req.file.path, () => {});
+
+        return res.status(400).json({
+          error:
+            "Roman Urdu captions require OPENAI_API_KEY. Captions are optional."
+        });
+      }
+
+      shortsJobs.set(id, job);
+
+      processShorts(job);
+
+      res.json({
+        id,
+        jobId: id,
+        status: job.status
+      });
+
+    } catch (error) {
+      console.error(error);
+
+      res.status(500).json({
+        error: error.message
       });
     }
-
-    if (job.captions) {
-      fs.unlink(req.file.path, () => {});
-      return res.status(501).json({
-        error: "Roman Urdu captions are not implemented in this server version. Turn captions OFF."
-      });
-    }
-
-    shortsJobs.set(id, job);
-    processShorts(job);
-
-    res.json({ id, jobId: id, status: job.status });
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ error: error.message });
   }
-});
+);
 
 app.get("/api/shorts/:id", (req, res) => {
   const job = shortsJobs.get(req.params.id);
 
   if (!job) {
-    return res.status(404).json({ error: "Job not found." });
+    return res.status(404).json({
+      error: "Job not found."
+    });
   }
 
   res.json(job);
 });
 
-app.get("/api/shorts/:id/download/:file", (req, res) => {
-  const job = shortsJobs.get(req.params.id);
+app.get(
+  "/api/shorts/:id/download/:file",
+  (req, res) => {
+    const job = shortsJobs.get(req.params.id);
 
-  if (!job || !job.outputs.includes(req.params.file)) {
-    return res.status(404).send("File not found.");
+    const filename = path.basename(req.params.file);
+
+    if (!job || !job.outputs.includes(filename)) {
+      return res.status(404).send("File not found.");
+    }
+
+    const file = path.join(
+      SHORTS_DIR,
+      filename
+    );
+
+    if (!fs.existsSync(file)) {
+      return res.status(404).send("File not found.");
+    }
+
+    res.download(file);
   }
+);
 
-  const file = path.join(SHORTS_DIR, path.basename(req.params.file));
-
-  if (!fs.existsSync(file)) {
-    return res.status(404).send("File not found.");
-  }
-
-  res.download(file);
-});
-
+// ==========================================
 // PLANS API
+// ==========================================
+
 app.get("/api/plans", (req, res) => {
   res.json(readPlans());
 });
 
 app.post("/api/plans", (req, res) => {
   const plans = readPlans();
+
   const plan = {
     id: crypto.randomUUID(),
     ...req.body,
@@ -726,15 +1090,23 @@ app.post("/api/plans", (req, res) => {
   plans.push(plan);
   savePlans(plans);
 
-  res.json({ success: true, plan });
+  res.json({
+    success: true,
+    plan
+  });
 });
 
 app.put("/api/plans/:id", (req, res) => {
   const plans = readPlans();
-  const index = plans.findIndex(p => p.id === req.params.id);
+
+  const index = plans.findIndex(
+    item => item.id === req.params.id
+  );
 
   if (index === -1) {
-    return res.status(404).json({ error: "Plan not found." });
+    return res.status(404).json({
+      error: "Plan not found."
+    });
   }
 
   plans[index] = {
@@ -744,33 +1116,156 @@ app.put("/api/plans/:id", (req, res) => {
   };
 
   savePlans(plans);
-  res.json({ success: true, plan: plans[index] });
+
+  res.json({
+    success: true,
+    plan: plans[index]
+  });
 });
 
 app.delete("/api/plans/:id", (req, res) => {
   const plans = readPlans();
-  const updated = plans.filter(p => p.id !== req.params.id);
+
+  const updated = plans.filter(
+    item => item.id !== req.params.id
+  );
 
   savePlans(updated);
-  res.json({ success: true });
+
+  res.json({
+    success: true
+  });
 });
 
+// ==========================================
 // PRIVATE YOUTUBE TEST UPLOAD
-app.post("/api/youtube/test-upload", upload.single("video"), async (req, res) => {
-  let uploadedFile = req.file ? req.file.path : null;
+// ==========================================
 
-  try {
-    if (!req.file) {
-      return res.status(400).json({ error: "Select a video first." });
+app.post(
+  "/api/youtube/test-upload",
+  upload.single("video"),
+  async (req, res) => {
+    const uploadedFile = req.file
+      ? req.file.path
+      : null;
+
+    try {
+      if (!req.file) {
+        return res.status(400).json({
+          error: "Select a video first."
+        });
+      }
+
+      const oauth = getOAuthClient();
+
+      const youtube = google.youtube({
+        version: "v3",
+        auth: oauth
+      });
+
+      const title = String(
+        req.body.title || "Private test upload"
+      ).slice(0, 100);
+
+      const description = String(
+        req.body.description || ""
+      ).slice(0, 5000);
+
+      const result = await youtube.videos.insert({
+        part: ["snippet", "status"],
+
+        requestBody: {
+          snippet: {
+            title,
+            description,
+            categoryId: "22"
+          },
+
+          status: {
+            privacyStatus: "private",
+            selfDeclaredMadeForKids: false
+          }
+        },
+
+        media: {
+          body: fs.createReadStream(uploadedFile)
+        }
+      });
+
+      res.json({
+        success: true,
+        videoId: result.data.id,
+        privacyStatus: "private",
+        message: "Private test upload successful."
+      });
+
+    } catch (error) {
+      console.error(
+        "YouTube upload error:",
+        error
+      );
+
+      res.status(500).json({
+        error: error.message
+      });
+
+    } finally {
+      if (uploadedFile) {
+        fs.unlink(uploadedFile, () => {});
+      }
+    }
+  }
+);
+
+// ==========================================
+// AUTOMATIC PUBLISHING
+// ==========================================
+
+// Intentionally disabled.
+// No automatic publishing task is started.
+
+console.log("Automatic YouTube publishing is OFF.");
+
+// ==========================================
+// ERROR HANDLING
+// ==========================================
+
+app.use((err, req, res, next) => {
+  console.error("Request error:", err.message);
+
+  if (err instanceof multer.MulterError) {
+    if (err.code === "LIMIT_FILE_SIZE") {
+      return res.status(413).json({
+        error: "File exceeds the 5 GB upload limit."
+      });
     }
 
-    const oauth = getOAuthClient();
-    const youtube = google.youtube({
-      version: "v3",
-      auth: oauth
+    return res.status(400).json({
+      error: err.message
     });
+  }
 
-    const title = String(req.body.title || "Private test upload").slice(0, 100);
-    const description = String(req.body.description || "").slice(0, 5000);
+  res.status(500).json({
+    error: err.message || "Server error."
+  });
+});
 
-    const result = await youtube.videos.insert
+// ==========================================
+// DASHBOARD
+// ==========================================
+
+app.get("/", (req, res) => {
+  res.sendFile(
+    path.join(__dirname, "index.html")
+  );
+});
+
+// ==========================================
+// START SERVER
+// ==========================================
+
+app.listen(PORT, "0.0.0.0", () => {
+  console.log(
+    "Creator Auto Publisher running on port " + PORT
+  );
+});
