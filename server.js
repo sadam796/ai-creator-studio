@@ -5,25 +5,31 @@ const fs = require("fs");
 const crypto = require("crypto");
 const cron = require("node-cron");
 const { google } = require("googleapis");
+const OpenAI = require("openai");
+const { spawn } = require("child_process");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
 const DATA_DIR = path.join(__dirname, "data");
 const UPLOAD_DIR = path.join(__dirname, "uploads");
+const SHORTS_DIR = path.join(__dirname, "shorts");
 const PLANS_FILE = path.join(DATA_DIR, "plans.json");
 const TOKEN_FILE = path.join(DATA_DIR, "youtube-token.json");
 
+const MAX_VIDEO_SIZE = 1024 * 1024 * 1024;
+
 fs.mkdirSync(DATA_DIR, { recursive: true });
 fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+fs.mkdirSync(SHORTS_DIR, { recursive: true });
 
 if (!fs.existsSync(PLANS_FILE)) {
-  fs.writeFileSync(PLANS_FILE, "[]", "utf8");
+  fs.writeFileSync(PLANS_FILE, "[]");
 }
 
 app.use(express.json({ limit: "1mb" }));
 
-// ADMIN PASSWORD PROTECTION
+// ADMIN AUTH
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD;
 
 function adminAuth(req, res, next) {
@@ -73,6 +79,7 @@ app.use((req, res, next) => {
   adminAuth(req, res, next);
 });
 
+// GOOGLE SETTINGS
 const CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
 const CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
 
@@ -145,8 +152,7 @@ function getOAuthClient() {
   return oauth;
 }
 
-const oauthStates = new Map();
-
+// UPLOAD STORAGE
 const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, UPLOAD_DIR),
 
@@ -159,10 +165,9 @@ const storage = multer.diskStorage({
 const upload = multer({
   storage,
   limits: {
-    fileSize: 100 * 1024 * 1024,
+    fileSize: MAX_VIDEO_SIZE,
     files: 2
   },
-
   fileFilter: (req, file, cb) => {
     if (
       file.mimetype.startsWith("video/") ||
@@ -175,7 +180,31 @@ const upload = multer({
   }
 });
 
-// HEALTH CHECK
+const shortsStorage = multer.diskStorage({
+  destination: (req, file, cb) => cb(null, UPLOAD_DIR),
+
+  filename: (req, file, cb) => {
+    const ext = path.extname(file.originalname).slice(0, 12);
+    cb(null, "shorts-" + crypto.randomUUID() + ext);
+  }
+});
+
+const shortsUpload = multer({
+  storage: shortsStorage,
+  limits: {
+    fileSize: MAX_VIDEO_SIZE,
+    files: 1
+  },
+  fileFilter: (req, file, cb) => {
+    if (file.mimetype.startsWith("video/")) {
+      return cb(null, true);
+    }
+
+    cb(new Error("Please select a video file."));
+  }
+});
+
+// HEALTH
 app.get("/api/health", (req, res) => {
   res.json({
     status: "online",
@@ -183,10 +212,14 @@ app.get("/api/health", (req, res) => {
     adminPasswordConfigured: Boolean(ADMIN_PASSWORD),
     googleOAuthConfigured: oauthConfigured(),
     uploadApi: "available",
+    uploadLimit: "1 GB",
     scheduler: "running",
     youtubePublishingEnabled:
       process.env.ENABLE_YOUTUBE_PUBLISHING === "true",
-    note: "Manual test uploads always use private visibility."
+    shortsApi: "available",
+    ffmpegConfigured: Boolean(process.env.FFMPEG_PATH),
+    openAIConfigured: Boolean(process.env.OPENAI_API_KEY),
+    note: "Manual YouTube test uploads always use private visibility."
   });
 });
 
@@ -204,19 +237,18 @@ app.get("/api/youtube/status", (req, res) => {
   });
 });
 
-// START GOOGLE AUTHORIZATION
+// GOOGLE AUTH
+const oauthStates = new Map();
+
 app.get("/auth/youtube/start", (req, res) => {
   if (!oauthConfigured()) {
     return res.status(503).send("Google OAuth is not configured.");
   }
 
   const state = crypto.randomBytes(32).toString("hex");
-
   oauthStates.set(state, Date.now());
 
-  setTimeout(() => {
-    oauthStates.delete(state);
-  }, 10 * 60 * 1000).unref();
+  setTimeout(() => oauthStates.delete(state), 10 * 60 * 1000).unref();
 
   const params = new URLSearchParams({
     client_id: CLIENT_ID,
@@ -232,12 +264,10 @@ app.get("/auth/youtube/start", (req, res) => {
   });
 
   res.redirect(
-    "https://accounts.google.com/o/oauth2/v2/auth?" +
-    params.toString()
+    "https://accounts.google.com/o/oauth2/v2/auth?" + params.toString()
   );
 });
 
-// GOOGLE CALLBACK
 app.get("/auth/youtube/callback", async (req, res) => {
   try {
     if (req.query.error) {
@@ -251,9 +281,7 @@ app.get("/auth/youtube/callback", async (req, res) => {
       typeof state !== "string" ||
       !oauthStates.has(state)
     ) {
-      return res.status(400).send(
-        "Authorization request expired. Please connect again."
-      );
+      return res.status(400).send("Authorization request expired.");
     }
 
     oauthStates.delete(state);
@@ -269,21 +297,17 @@ app.get("/auth/youtube/callback", async (req, res) => {
 
     res.send(`
       <h2>YouTube authorization successful!</h2>
-      <p>Authorization tokens have been saved.</p>
-      <p>Automatic publishing remains controlled separately.</p>
-      <a href="/">Return to Creator Auto Publisher</a>
+      <p>Tokens have been saved.</p>
+      <p>Automatic publishing remains separately controlled.</p>
+      <a href="/">Return to dashboard</a>
     `);
-
   } catch (err) {
     console.error("OAuth callback error:", err.message);
-
-    res.status(500).send(
-      "YouTube authorization failed. Check server logs."
-    );
+    res.status(500).send("YouTube authorization failed.");
   }
 });
 
-// UPLOAD VIDEO OR THUMBNAIL
+// NORMAL VIDEO UPLOAD - 1 GB
 app.post(
   "/api/upload",
   upload.fields([
@@ -302,7 +326,6 @@ app.post(
 
     res.status(201).json({
       message: "Upload completed.",
-
       video: video
         ? {
             fileName: video.filename,
@@ -310,7 +333,6 @@ app.post(
             size: video.size
           }
         : null,
-
       thumbnail: thumbnail
         ? {
             fileName: thumbnail.filename,
@@ -352,9 +374,7 @@ app.post("/api/plans", (req, res) => {
   } = req.body || {};
 
   if (!title || typeof title !== "string" || !title.trim()) {
-    return res.status(400).json({
-      error: "Title is required."
-    });
+    return res.status(400).json({ error: "Title is required." });
   }
 
   if (
@@ -362,9 +382,7 @@ app.post("/api/plans", (req, res) => {
     !platforms.length ||
     platforms.some(p => !ALLOWED_PLATFORMS.includes(p))
   ) {
-    return res.status(400).json({
-      error: "Select valid platforms."
-    });
+    return res.status(400).json({ error: "Select valid platforms." });
   }
 
   if (!validFutureDate(dateTime)) {
@@ -384,15 +402,8 @@ app.post("/api/plans", (req, res) => {
     platforms,
     contentType: String(contentType).slice(0, 100),
     dateTime,
-
-    videoFileName: path.basename(
-      String(videoFileName)
-    ).slice(0, 255),
-
-    thumbnailFileName: path.basename(
-      String(thumbnailFileName)
-    ).slice(0, 255),
-
+    videoFileName: path.basename(String(videoFileName)).slice(0, 255),
+    thumbnailFileName: path.basename(String(thumbnailFileName)).slice(0, 255),
     status: "scheduled",
     createdAt: new Date().toISOString()
   };
@@ -408,9 +419,7 @@ app.post("/api/plans", (req, res) => {
 
 // LIST PLANS
 app.get("/api/plans", (req, res) => {
-  res.json({
-    plans: readPlans()
-  });
+  res.json({ plans: readPlans() });
 });
 
 // EDIT PLAN
@@ -419,9 +428,7 @@ app.put("/api/plans/:id", (req, res) => {
   const plan = plans.find(p => p.id === req.params.id);
 
   if (!plan) {
-    return res.status(404).json({
-      error: "Publishing plan not found."
-    });
+    return res.status(404).json({ error: "Publishing plan not found." });
   }
 
   if (plan.status !== "scheduled") {
@@ -437,9 +444,7 @@ app.put("/api/plans/:id", (req, res) => {
     !body.title.trim() ||
     body.title.trim().length > 100
   ) {
-    return res.status(400).json({
-      error: "Title is required and must be 100 characters or less."
-    });
+    return res.status(400).json({ error: "Invalid title." });
   }
 
   if (!validFutureDate(body.dateTime)) {
@@ -453,9 +458,7 @@ app.put("/api/plans/:id", (req, res) => {
     !body.platforms.length ||
     body.platforms.some(p => !ALLOWED_PLATFORMS.includes(p))
   ) {
-    return res.status(400).json({
-      error: "Select valid platforms."
-    });
+    return res.status(400).json({ error: "Select valid platforms." });
   }
 
   plan.title = body.title.trim();
@@ -468,11 +471,7 @@ app.put("/api/plans/:id", (req, res) => {
   plan.updatedAt = new Date().toISOString();
 
   savePlans(plans);
-
-  res.json({
-    message: "Publishing plan updated.",
-    plan
-  });
+  res.json({ message: "Publishing plan updated.", plan });
 });
 
 // CANCEL PLAN
@@ -481,9 +480,7 @@ app.post("/api/plans/:id/cancel", (req, res) => {
   const plan = plans.find(p => p.id === req.params.id);
 
   if (!plan) {
-    return res.status(404).json({
-      error: "Publishing plan not found."
-    });
+    return res.status(404).json({ error: "Publishing plan not found." });
   }
 
   if (plan.status !== "scheduled") {
@@ -496,26 +493,19 @@ app.post("/api/plans/:id/cancel", (req, res) => {
   plan.cancelledAt = new Date().toISOString();
 
   savePlans(plans);
-
-  res.json({
-    message: "Publishing plan cancelled successfully.",
-    plan
-  });
+  res.json({ message: "Publishing plan cancelled successfully.", plan });
 });
 
-// YOUTUBE UPLOAD - ALWAYS PRIVATE
+// YOUTUBE PRIVATE UPLOAD
 async function publishYouTubePlan(plan) {
   if (!plan.videoFileName) {
     throw new Error("No video file is attached to this plan.");
   }
 
-  const videoPath = path.join(
-    UPLOAD_DIR,
-    path.basename(plan.videoFileName)
-  );
+  const videoPath = path.join(UPLOAD_DIR, path.basename(plan.videoFileName));
 
   if (!fs.existsSync(videoPath)) {
-    throw new Error("The uploaded video file could not be found.");
+    throw new Error("Uploaded video file could not be found.");
   }
 
   const youtube = google.youtube({
@@ -538,7 +528,6 @@ async function publishYouTubePlan(plan) {
       ].filter(Boolean).join("\n\n").slice(0, 5000),
       categoryId: "22"
     },
-
     status: {
       privacyStatus: "private",
       selfDeclaredMadeForKids: false
@@ -552,9 +541,7 @@ async function publishYouTubePlan(plan) {
   const response = await youtube.videos.insert({
     part: ["snippet", "status"],
     requestBody: videoResource,
-    media: {
-      body: fs.createReadStream(videoPath)
-    }
+    media: { body: fs.createReadStream(videoPath) }
   });
 
   const videoId = response.data.id;
@@ -563,14 +550,14 @@ async function publishYouTubePlan(plan) {
     throw new Error("YouTube did not return a video ID.");
   }
 
-  // Save the video ID before attempting thumbnail.
   plan.youtubeVideoId = videoId;
   plan.youtubeUploadedAt = new Date().toISOString();
-  savePlans(readPlans().map(p =>
-    p.id === plan.id ? { ...p, ...plan } : p
-  ));
 
-  // Thumbnail failure must not undo a successful video upload.
+  const savedPlans = readPlans().map(p =>
+    p.id === plan.id ? { ...p, ...plan } : p
+  );
+  savePlans(savedPlans);
+
   if (plan.thumbnailFileName) {
     const thumbnailPath = path.join(
       UPLOAD_DIR,
@@ -581,9 +568,7 @@ async function publishYouTubePlan(plan) {
       try {
         await youtube.thumbnails.set({
           videoId,
-          media: {
-            body: fs.createReadStream(thumbnailPath)
-          }
+          media: { body: fs.createReadStream(thumbnailPath) }
         });
       } catch (err) {
         console.error("Thumbnail upload failed:", err.message);
@@ -595,15 +580,13 @@ async function publishYouTubePlan(plan) {
   return videoId;
 }
 
-// MANUAL PRIVATE TEST UPLOAD
+// PRIVATE TEST UPLOAD
 app.post("/api/plans/:id/test-upload", async (req, res) => {
   const plans = readPlans();
   const plan = plans.find(p => p.id === req.params.id);
 
   if (!plan) {
-    return res.status(404).json({
-      error: "Publishing plan not found."
-    });
+    return res.status(404).json({ error: "Publishing plan not found." });
   }
 
   if (plan.status !== "scheduled") {
@@ -619,9 +602,7 @@ app.post("/api/plans/:id/test-upload", async (req, res) => {
   }
 
   if (!plan.videoFileName) {
-    return res.status(400).json({
-      error: "This plan has no video file."
-    });
+    return res.status(400).json({ error: "This plan has no video file." });
   }
 
   plan.status = "publishing";
@@ -631,18 +612,17 @@ app.post("/api/plans/:id/test-upload", async (req, res) => {
   try {
     const videoId = await publishYouTubePlan(plan);
 
-    plan.status = "test-published";
-    plan.youtubeVideoId = videoId;
-    plan.publishedAt = new Date().toISOString();
-    plan.error = "";
-
     const updatedPlans = readPlans();
     const index = updatedPlans.findIndex(p => p.id === plan.id);
 
     if (index !== -1) {
       updatedPlans[index] = {
         ...updatedPlans[index],
-        ...plan
+        ...plan,
+        status: "test-published",
+        youtubeVideoId: videoId,
+        publishedAt: new Date().toISOString(),
+        error: ""
       };
       savePlans(updatedPlans);
     }
@@ -653,7 +633,6 @@ app.post("/api/plans/:id/test-upload", async (req, res) => {
       youtubeVideoId: videoId,
       youtubeUrl: "https://www.youtube.com/watch?v=" + videoId
     });
-
   } catch (err) {
     console.error("Private test upload failed:", err.message);
 
@@ -671,6 +650,318 @@ app.post("/api/plans/:id/test-upload", async (req, res) => {
       error: err.message || "Private test upload failed."
     });
   }
+});
+
+// AI SHORTS JOBS
+const shortsJobs = new Map();
+let shortsBusy = false;
+
+function runFFmpeg(args) {
+  return new Promise((resolve, reject) => {
+    const ffmpegPath = process.env.FFMPEG_PATH || "ffmpeg";
+    const process = spawn(ffmpegPath, args);
+
+    let errorText = "";
+
+    process.stderr.on("data", data => {
+      errorText += data.toString();
+
+      if (errorText.length > 12000) {
+        errorText = errorText.slice(-12000);
+      }
+    });
+
+    process.on("error", reject);
+
+    process.on("close", code => {
+      if (code === 0) resolve();
+      else reject(new Error("FFmpeg failed: " + errorText.slice(-1500)));
+    });
+  });
+}
+
+function getOpenAI() {
+  if (!process.env.OPENAI_API_KEY) {
+    throw new Error("OPENAI_API_KEY is missing in Hostinger Environment Variables.");
+  }
+
+  return new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+}
+
+async function getClipSuggestions(client, transcript, count, duration) {
+  const prompt = `
+You are an expert Urdu video editor.
+Choose ${count} interesting clips from this Urdu transcript.
+Each clip should be close to ${duration} seconds.
+Choose funny, emotional, useful or engaging moments.
+Do not invent timestamps.
+Return JSON only:
+{"clips":[{"start":0,"end":30,"reason":"short reason"}]}
+
+Transcript:
+${transcript}
+`;
+
+  const result = await client.chat.completions.create({
+    model: process.env.OPENAI_MODEL || "gpt-4o-mini",
+    messages: [{ role: "user", content: prompt }],
+    response_format: { type: "json_object" }
+  });
+
+  const parsed = JSON.parse(result.choices[0].message.content);
+  return Array.isArray(parsed.clips) ? parsed.clips : [];
+}
+
+async function processShorts(job) {
+  if (shortsBusy) {
+    job.status = "queued";
+    return;
+  }
+
+  shortsBusy = true;
+
+  try {
+    const client = getOpenAI();
+    const videoPath = path.join(UPLOAD_DIR, job.fileName);
+
+    job.status = "transcribing";
+    job.progress = 10;
+
+    const audioPath = path.join(SHORTS_DIR, job.id + ".mp3");
+
+    await runFFmpeg([
+      "-y",
+      "-i", videoPath,
+      "-vn",
+      "-ac", "1",
+      "-ar", "16000",
+      "-b:a", "48k",
+      audioPath
+    ]);
+
+    const audioStats = fs.statSync(audioPath);
+
+    if (audioStats.size > 24 * 1024 * 1024) {
+      throw new Error("Audio is too large for one transcription request. A shorter video is needed.");
+    }
+
+    const transcription = await client.audio.transcriptions.create({
+      file: fs.createReadStream(audioPath),
+      model: "whisper-1",
+      language: "ur",
+      response_format: "verbose_json",
+      timestamp_granularities: ["segment"]
+    });
+
+    job.progress = 35;
+
+    const segments = transcription.segments || [];
+    const transcript = segments.map(s =>
+      `[${Number(s.start).toFixed(1)}-${Number(s.end).toFixed(1)}] ${s.text}`
+    ).join("\n");
+
+    if (!transcript.trim()) {
+      throw new Error("No Urdu speech was detected in this video.");
+    }
+
+    let clips = [];
+
+    if (job.mode === "manual") {
+      clips = [{
+        start: job.manualStart,
+        end: job.manualEnd,
+        reason: "Manual selection"
+      }];
+    } else {
+      job.status = "selecting moments";
+      clips = await getClipSuggestions(
+        client,
+        transcript.slice(0, 45000),
+        job.count,
+        job.duration
+      );
+    }
+
+    const videoDuration = Number(
+      transcription.duration || 0
+    );
+
+    clips = clips
+      .map(c => ({
+        start: Math.max(0, Number(c.start)),
+        end: Math.min(videoDuration, Number(c.end)),
+        reason: String(c.reason || "")
+      }))
+      .filter(c =>
+        Number.isFinite(c.start) &&
+        Number.isFinite(c.end) &&
+        c.end > c.start &&
+        c.end - c.start <= 90
+      );
+
+    if (!clips.length) {
+      throw new Error("AI could not find valid clips.");
+    }
+
+    job.status = "rendering";
+    job.progress = 50;
+    job.outputs = [];
+
+    for (let i = 0; i < clips.length; i++) {
+      const clip = clips[i];
+      const outputName = job.id + "-short-" + (i + 1) + ".mp4";
+      const outputPath = path.join(SHORTS_DIR, outputName);
+
+      const args = [
+        "-y",
+        "-ss", String(clip.start),
+        "-i", videoPath,
+        "-t", String(clip.end - clip.start),
+        "-vf",
+        "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920",
+        "-c:v", "libx264",
+        "-preset", "veryfast",
+        "-crf", "23",
+        "-c:a", "aac",
+        "-b:a", "128k",
+        "-movflags", "+faststart",
+        outputPath
+      ];
+
+      await runFFmpeg(args);
+
+      job.outputs.push({
+        fileName: outputName,
+        start: clip.start,
+        end: clip.end,
+        reason: clip.reason,
+        captions: "off"
+      });
+
+      job.progress = 50 + Math.round(((i + 1) / clips.length) * 45);
+    }
+
+    job.status = "completed";
+    job.progress = 100;
+    job.completedAt = new Date().toISOString();
+
+    try {
+      fs.unlinkSync(audioPath);
+    } catch {}
+  } catch (err) {
+    console.error("Shorts processing failed:", err.message);
+    job.status = "failed";
+    job.error = String(err.message).slice(0, 1000);
+  } finally {
+    shortsBusy = false;
+
+    const nextJob = [...shortsJobs.values()].find(
+      j => j.status === "queued"
+    );
+
+    if (nextJob) {
+      processShorts(nextJob);
+    }
+  }
+}
+
+// CREATE AI SHORTS JOB
+app.post("/api/shorts", shortsUpload.single("video"), (req, res) => {
+  const video = req.file;
+
+  if (!video) {
+    return res.status(400).json({ error: "Select a video." });
+  }
+
+  const mode = req.body.mode === "manual" ? "manual" : "ai";
+  const count = Math.max(1, Math.min(15, Number(req.body.count) || 5));
+  const duration = [30, 45, 60].includes(Number(req.body.duration))
+    ? Number(req.body.duration)
+    : 30;
+
+  const manualStart = Number(req.body.start);
+  const manualEnd = Number(req.body.end);
+
+  if (
+    mode === "manual" &&
+    (
+      !Number.isFinite(manualStart) ||
+      !Number.isFinite(manualEnd) ||
+      manualStart < 0 ||
+      manualEnd <= manualStart ||
+      manualEnd - manualStart > 90
+    )
+  ) {
+    fs.unlink(video.path, () => {});
+    return res.status(400).json({
+      error: "Enter valid manual start and end times. Maximum clip duration is 90 seconds."
+    });
+  }
+
+  const id = crypto.randomUUID();
+
+  const job = {
+    id,
+    fileName: video.filename,
+    mode,
+    count,
+    duration,
+    manualStart,
+    manualEnd,
+    status: "queued",
+    progress: 0,
+    outputs: [],
+    createdAt: new Date().toISOString()
+  };
+
+  shortsJobs.set(id, job);
+  processShorts(job);
+
+  res.status(202).json({
+    message: "Shorts job accepted.",
+    jobId: id,
+    status: job.status
+  });
+});
+
+// CHECK SHORTS JOB
+app.get("/api/shorts/:id", (req, res) => {
+  const job = shortsJobs.get(req.params.id);
+
+  if (!job) {
+    return res.status(404).json({ error: "Shorts job not found." });
+  }
+
+  res.json({
+    id: job.id,
+    status: job.status,
+    progress: job.progress,
+    outputs: job.outputs,
+    error: job.error || ""
+  });
+});
+
+// DOWNLOAD SHORT
+app.get("/api/shorts/:id/download/:file", (req, res) => {
+  const job = shortsJobs.get(req.params.id);
+
+  if (!job || job.status !== "completed") {
+    return res.status(404).send("Shorts output not found.");
+  }
+
+  const fileName = path.basename(req.params.file);
+
+  if (!job.outputs.some(o => o.fileName === fileName)) {
+    return res.status(404).send("Invalid output file.");
+  }
+
+  const filePath = path.join(SHORTS_DIR, fileName);
+
+  if (!fs.existsSync(filePath)) {
+    return res.status(404).send("File no longer exists.");
+  }
+
+  res.download(filePath);
 });
 
 // SCHEDULER
@@ -700,27 +991,22 @@ cron.schedule("* * * * *", async () => {
 
       plan.status = "publishing";
       plan.attemptedAt = new Date().toISOString();
-
       savePlans(plans);
 
       try {
         const videoId = await publishYouTubePlan(plan);
-
         plan.status = "published";
         plan.youtubeVideoId = videoId;
         plan.publishedAt = new Date().toISOString();
         plan.error = "";
-
       } catch (err) {
         console.error("YouTube publish failed:", err.message);
-
         plan.status = "failed";
         plan.error = String(err.message).slice(0, 500);
       }
 
       savePlans(plans);
     }
-
   } finally {
     schedulerBusy = false;
   }
@@ -732,7 +1018,7 @@ app.use((err, req, res, next) => {
     return res.status(400).json({
       error:
         err.code === "LIMIT_FILE_SIZE"
-          ? "Maximum file size is 100 MB."
+          ? "Maximum file size is 1 GB."
           : err.message
     });
   }
