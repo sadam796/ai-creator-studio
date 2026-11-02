@@ -685,7 +685,7 @@ function showShortsResults(jobId, outputs) {
 
     const download = document.createElement("a");
     download.href = video.src;
-    download.download = output.fileName;
+    download.download = output;
     download.textContent = "⬇️ Download Short";
     item.appendChild(document.createElement("br"));
     item.appendChild(download);
