@@ -683,7 +683,11 @@ function showShortsResults(jobId, outputs) {
       "/api/shorts/" + encodeURIComponent(jobId) +
       "/download/" + encodeURIComponent(filename);
 
-    video.src = videoUrl;
+    const previewUrl =
+      "/api/shorts/" + encodeURIComponent(jobId) +
+      "/preview/" + encodeURIComponent(filename);
+
+    video.src = previewUrl;
     item.appendChild(video);
 
     const download = document.createElement("a");
