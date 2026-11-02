@@ -653,6 +653,8 @@ function pollShortsJob(jobId) {
 
 // SHOW SHORTS
 function showShortsResults(jobId, outputs) {
+
+function showShortsResults(jobId, outputs) {
   const box = $("shortsResults");
   box.innerHTML = "";
 
@@ -662,6 +664,12 @@ function showShortsResults(jobId, outputs) {
   }
 
   outputs.forEach((output, index) => {
+    const filename = typeof output === "string"
+      ? output
+      : output.fileName;
+
+    if (!filename) return;
+
     const item = document.createElement("div");
     item.className = "result";
 
@@ -669,30 +677,28 @@ function showShortsResults(jobId, outputs) {
     title.textContent = "Short " + (index + 1);
     item.appendChild(title);
 
-    const reason = document.createElement("p");
-    reason.className = "small";
-    reason.textContent = output.reason || "Selected clip";
-    item.appendChild(reason);
-
     const video = document.createElement("video");
     video.controls = true;
     video.playsInline = true;
-    video.src =
-      "/api/shorts/" + encodeURIComponent(jobId) +
-      "/download/" + encodeURIComponent(output.fileName);
 
+    const videoUrl =
+      "/api/shorts/" + encodeURIComponent(jobId) +
+      "/download/" + encodeURIComponent(filename);
+
+    video.src = videoUrl;
     item.appendChild(video);
 
     const download = document.createElement("a");
-    download.href = video.src;
-    download.download = output;
+    download.href = videoUrl;
+    download.download = filename;
     download.textContent = "⬇️ Download Short";
+
     item.appendChild(document.createElement("br"));
     item.appendChild(download);
-
     box.appendChild(item);
   });
 }
+
 
 // SYSTEM STATUS
 async function checkStatus() {
