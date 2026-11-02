@@ -766,14 +766,19 @@ async function processAIShorts(job) {
     message: "AI is transcribing your video..."
   });
 
-  const transcription =
-    await openai.audio.transcriptions.create({
+  let transcription;
+
+  try {
+    transcription = await openai.audio.transcriptions.create({
       file: fs.createReadStream(audioFile),
       model: "whisper-1",
       response_format: "verbose_json"
     });
-
-  fs.unlink(audioFile, () => {});
+  } finally {
+    if (fs.existsSync(audioFile)) {
+      fs.unlink(audioFile, () => {});
+    }
+  }
 
   const segments = transcription.segments || [];
 
@@ -829,7 +834,43 @@ async function processAIShorts(job) {
     );
   }
 
-  const clips = result.clips.slice(0, job.count);
+  // Validate AI timestamps before rendering. Keep clips chronological,
+  // within the source video, within the requested duration, and non-overlapping.
+  const candidates = result.clips
+    .map(clip => ({
+      start: Number(clip.start),
+      end: Number(clip.end),
+      title: String(clip.title || "").slice(0, 100)
+    }))
+    .filter(clip =>
+      Number.isFinite(clip.start) &&
+      Number.isFinite(clip.end) &&
+      clip.start >= 0 &&
+      clip.start < videoDuration &&
+      clip.end > clip.start
+    )
+    .map(clip => ({
+      ...clip,
+      end: Math.min(videoDuration, clip.end, clip.start + job.duration)
+    }))
+    .filter(clip => clip.end - clip.start >= 5)
+    .sort((a, b) => a.start - b.start);
+
+  const clips = [];
+  let lastClipEnd = -1;
+
+  for (const clip of candidates) {
+    if (clip.start < lastClipEnd) continue;
+    clips.push(clip);
+    lastClipEnd = clip.end;
+    if (clips.length >= job.count) break;
+  }
+
+  if (!clips.length) {
+    throw new Error(
+      "AI could not find valid, separate moments. Try another video or a longer clip duration."
+    );
+  }
 
   let captionData = null;
 
@@ -850,26 +891,8 @@ async function processAIShorts(job) {
 
   for (let i = 0; i < clips.length; i++) {
     const clip = clips[i];
-
-    const start = Number(clip.start);
-
-    if (!Number.isFinite(start) || start < 0) {
-      continue;
-    }
-
-    const end = Math.min(
-      videoDuration,
-      Number(clip.end),
-      start + job.duration
-    );
-
-    if (
-      !Number.isFinite(end) ||
-      end <= start ||
-      end - start < 5
-    ) {
-      continue;
-    }
+    const start = clip.start;
+    const end = clip.end;
 
     const filename =
       "short-" + job.id + "-" + (i + 1) + ".mp4";
