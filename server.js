@@ -1049,6 +1049,29 @@ app.get("/api/shorts/:id", (req, res) => {
 });
 
 app.get(
+  "/api/shorts/:id/preview/:file",
+  (req, res) => {
+    const job = shortsJobs.get(req.params.id);
+    const filename = path.basename(req.params.file);
+
+    if (!job || !job.outputs.includes(filename)) {
+      return res.status(404).send("File not found.");
+    }
+
+    const file = path.join(SHORTS_DIR, filename);
+
+    if (!fs.existsSync(file)) {
+      return res.status(404).send("File not found.");
+    }
+
+    res.setHeader("Content-Type", "video/mp4");
+    res.setHeader("Content-Disposition", "inline; filename=" + JSON.stringify(filename));
+    res.setHeader("Accept-Ranges", "bytes");
+    res.sendFile(file);
+  }
+);
+
+app.get(
   "/api/shorts/:id/download/:file",
   (req, res) => {
     const job = shortsJobs.get(req.params.id);
@@ -1257,6 +1280,9 @@ app.use((err, req, res, next) => {
 // ==========================================
 
 app.get("/", (req, res) => {
+  res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+  res.setHeader("Pragma", "no-cache");
+  res.setHeader("Expires", "0");
   res.sendFile(
     path.join(__dirname, "index.html")
   );
