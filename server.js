@@ -508,110 +508,129 @@ async function createRomanUrduSRT(
     jobId + "-captions.mp3"
   );
 
+  try {
+    await runCommand(FFMPEG, [
+      "-y",
+      "-i", input,
+      "-vn",
+      "-ac", "1",
+      "-ar", "16000",
+      "-b:a", "48k",
+      audioFile
+    ]);
+
+    const stats = fs.statSync(audioFile);
+
+    if (stats.size > 24 * 1024 * 1024) {
+      throw new Error(
+        "Caption audio exceeds the transcription limit. Use a shorter video."
+      );
+    }
+
+    // Let Whisper detect Urdu, Hindi, or mixed speech automatically.
+    const transcription =
+      await openai.audio.transcriptions.create({
+        file: fs.createReadStream(audioFile),
+        model: "whisper-1",
+        response_format: "verbose_json"
+      });
+
+    const segments = transcription.segments || [];
+
+    if (!segments.length) {
+      throw new Error(
+        "No speech was found for captions."
+      );
+    }
+
+    const translated =
+      await openai.chat.completions.create({
+        model: "gpt-4o-mini",
+        response_format: { type: "json_object" },
+        messages: [
+          {
+            role: "system",
+            content:
+              "Convert every spoken Urdu or Hindi segment into natural, readable Roman Urdu using Latin letters. Transliterate faithfully; do not translate into English. Preserve common English words, names and phrases as spoken. Keep the same order and return JSON with an array called captions. Each item must have an index and text. Never use Urdu or Devanagari script."
+          },
+          {
+            role: "user",
+            content: JSON.stringify(
+              segments.map((segment, index) => ({
+                index,
+                text: segment.text
+              }))
+            )
+          }
+        ]
+      });
+
+    const data = JSON.parse(
+      translated.choices[0].message.content || "{}"
+    );
+
+    if (!Array.isArray(data.captions)) {
+      throw new Error(
+        "Roman Urdu caption conversion failed."
+      );
+    }
+
+    const captionMap = new Map();
+
+    data.captions.forEach(item => {
+      captionMap.set(
+        Number(item.index),
+        String(item.text || "")
+      );
+    });
+
+    return { segments, captions: captionMap };
+
+  } finally {
+    if (fs.existsSync(audioFile)) {
+      fs.unlink(audioFile, () => {});
+    }
+  }
+}
+
+// Build a separate subtitle file for each clip. Timestamps are shifted
+// to the clip's own zero point so captions appear at the correct time.
+function writeClipSRT(captionData, jobId, clipNumber, clipStart, clipDuration) {
+  const clipEnd = clipStart + clipDuration;
   const srtFile = path.join(
     SHORTS_DIR,
-    jobId + "-captions.srt"
+    jobId + "-clip-" + clipNumber + ".srt"
   );
-
-  await runCommand(FFMPEG, [
-    "-y",
-    "-i", input,
-    "-vn",
-    "-ac", "1",
-    "-ar", "16000",
-    "-b:a", "48k",
-    audioFile
-  ]);
-
-  const stats = fs.statSync(audioFile);
-
-  if (stats.size > 24 * 1024 * 1024) {
-    fs.unlink(audioFile, () => {});
-
-    throw new Error(
-      "Caption audio exceeds the transcription limit. Use a shorter video."
-    );
-  }
-
-  const transcription =
-    await openai.audio.transcriptions.create({
-      file: fs.createReadStream(audioFile),
-      model: "whisper-1",
-      language: "ur",
-      response_format: "verbose_json"
-    });
-
-  const segments = transcription.segments || [];
-
-  if (!segments.length) {
-    throw new Error(
-      "No speech was found for captions."
-    );
-  }
-
-  const translated =
-    await openai.chat.completions.create({
-      model: "gpt-4o-mini",
-      response_format: { type: "json_object" },
-      messages: [
-        {
-          role: "system",
-          content:
-            "Convert each Urdu speech segment into natural Roman Urdu. Keep the same order and return JSON with an array called captions. Each item must have an index and text. Do not use Urdu script. Do not translate into English."
-        },
-        {
-          role: "user",
-          content: JSON.stringify(
-            segments.map((segment, index) => ({
-              index,
-              text: segment.text
-            }))
-          )
-        }
-      ]
-    });
-
-  const data = JSON.parse(
-    translated.choices[0].message.content || "{}"
-  );
-
-  if (!Array.isArray(data.captions)) {
-    throw new Error(
-      "Roman Urdu caption conversion failed."
-    );
-  }
-
-  const captionMap = new Map();
-
-  data.captions.forEach(item => {
-    captionMap.set(
-      Number(item.index),
-      String(item.text || "")
-    );
-  });
 
   let srt = "";
+  let entry = 0;
 
-  segments.forEach((segment, index) => {
-    const text = captionMap.get(index);
-
+  captionData.segments.forEach((segment, index) => {
+    const text = captionData.captions.get(index);
     if (!text) return;
 
+    const segmentStart = Number(segment.start);
+    const segmentEnd = Number(segment.end);
+
+    if (!Number.isFinite(segmentStart) || !Number.isFinite(segmentEnd)) return;
+
+    const visibleStart = Math.max(segmentStart, clipStart);
+    const visibleEnd = Math.min(segmentEnd, clipEnd);
+
+    if (visibleEnd <= visibleStart) return;
+
+    entry++;
     srt +=
-      (index + 1) + "\n" +
-      srtTime(segment.start) + " --> " +
-      srtTime(segment.end) + "\n" +
+      entry + "\n" +
+      srtTime(visibleStart - clipStart) + " --> " +
+      srtTime(visibleEnd - clipStart) + "\n" +
       text.replace(/\n/g, " ") + "\n\n";
   });
 
+  if (!entry) return null;
+
   fs.writeFileSync(srtFile, srt, "utf8");
-
-  fs.unlink(audioFile, () => {});
-
-  return {
-    srtFile,
-    segments
-  };
+  return srtFile;
 }
 
 // ==========================================
@@ -642,7 +661,7 @@ async function processManualShort(job) {
     );
   }
 
-  let subtitleFile = null;
+  let captionData = null;
 
   if (job.captions) {
     updateJob(job, {
@@ -651,15 +670,11 @@ async function processManualShort(job) {
       message: "Creating Roman Urdu captions..."
     });
 
-    const openai = getOpenAI();
-
-    const captionData = await createRomanUrduSRT(
-      openai,
+    captionData = await createRomanUrduSRT(
+      getOpenAI(),
       job.input,
       job.id
     );
-
-    subtitleFile = captionData.srtFile;
   }
 
   const filename = "short-" + job.id + ".mp4";
@@ -675,16 +690,22 @@ async function processManualShort(job) {
     message: "Rendering your Short..."
   });
 
-  await renderShort(
-    job.input,
-    output,
-    start,
-    end - start,
-    subtitleFile
-  );
+  const subtitleFile = captionData
+    ? writeClipSRT(captionData, job.id, 1, start, end - start)
+    : null;
 
-  if (subtitleFile) {
-    fs.unlink(subtitleFile, () => {});
+  try {
+    await renderShort(
+      job.input,
+      output,
+      start,
+      end - start,
+      subtitleFile
+    );
+  } finally {
+    if (subtitleFile && fs.existsSync(subtitleFile)) {
+      fs.unlink(subtitleFile, () => {});
+    }
   }
 
   updateJob(job, {
@@ -749,7 +770,6 @@ async function processAIShorts(job) {
     await openai.audio.transcriptions.create({
       file: fs.createReadStream(audioFile),
       model: "whisper-1",
-      language: "ur",
       response_format: "verbose_json"
     });
 
@@ -782,7 +802,7 @@ async function processAIShorts(job) {
         {
           role: "system",
           content:
-            "You are an expert short-video editor. Select engaging, self-contained moments from the timestamped transcript. Return JSON with a clips array. Every clip must have start, end and title. Use only supplied timestamps. Do not invent timestamps. Respect requested clip duration."
+            "You are an expert short-video editor. Read the transcript even if it contains Urdu, Hindi, Roman Urdu, or English. Select the most engaging, self-contained moments that make sense without the rest of the long video. Prefer strong hooks, useful information, funny or emotional moments, clear explanations, and complete thoughts. Avoid greetings, long pauses, repeated content, incomplete sentences, and abrupt cut-offs. Return JSON with a clips array. Each clip must contain start, end, and a short title. Use only supplied timestamps; never invent timestamps. Each clip must be at least 5 seconds and no longer than the requested duration or the video length. Prefer different, non-overlapping moments. Return up to the requested number of clips."
         },
         {
           role: "user",
@@ -811,7 +831,7 @@ async function processAIShorts(job) {
 
   const clips = result.clips.slice(0, job.count);
 
-  let subtitleFile = null;
+  let captionData = null;
 
   if (job.captions) {
     updateJob(job, {
@@ -819,13 +839,11 @@ async function processAIShorts(job) {
       message: "Preparing Roman Urdu captions..."
     });
 
-    const captionData = await createRomanUrduSRT(
+    captionData = await createRomanUrduSRT(
       openai,
       job.input,
       job.id
     );
-
-    subtitleFile = captionData.srtFile;
   }
 
   const outputs = [];
@@ -861,13 +879,23 @@ async function processAIShorts(job) {
       filename
     );
 
-    await renderShort(
-      job.input,
-      output,
-      start,
-      end - start,
-      subtitleFile
-    );
+    const subtitleFile = captionData
+      ? writeClipSRT(captionData, job.id, i + 1, start, end - start)
+      : null;
+
+    try {
+      await renderShort(
+        job.input,
+        output,
+        start,
+        end - start,
+        subtitleFile
+      );
+    } finally {
+      if (subtitleFile && fs.existsSync(subtitleFile)) {
+        fs.unlink(subtitleFile, () => {});
+      }
+    }
 
     outputs.push(filename);
 
@@ -878,10 +906,6 @@ async function processAIShorts(job) {
         "Rendering Short " + (i + 1) +
         " of " + clips.length + "..."
     });
-  }
-
-  if (subtitleFile) {
-    fs.unlink(subtitleFile, () => {});
   }
 
   if (!outputs.length) {
@@ -931,6 +955,7 @@ async function processShorts(job) {
 
     updateJob(job, {
       status: "failed",
+      error: error.message || "Processing failed.",
       message: error.message || "Processing failed."
     });
 
