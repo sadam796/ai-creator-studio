@@ -157,10 +157,10 @@ Maximum selected video size: 1 GB, subject to Hostinger limits.
 <label>Roman Urdu Captions</label>
 <select id="captions">
 <option value="off">OFF — No Captions (Default)</option>
-<option value="on" disabled>ON — Roman Urdu (Not available yet)</option>
+<option value="on">ON — Roman Urdu Captions</option>
 </select>
 <p class="small">
-Roman Urdu caption rendering is not yet implemented in the current backend.
+Captions OFF by default. Turn ON to generate and burn Roman Urdu captions into each Short. Captions require the OpenAI API key.
 </p>
 
 <button type="button" id="createShortsBtn">✨ Create Shorts</button>
@@ -577,6 +577,7 @@ $("createShortsBtn").addEventListener("click", async () => {
   formData.append("mode", mode);
   formData.append("count", $("shortsCount").value);
   formData.append("duration", $("shortsDuration").value);
+  formData.append("captions", $("captions").value === "on" ? "true" : "false");
 
   if (mode === "manual") {
     formData.append("start", $("manualStart").value);
@@ -597,7 +598,9 @@ $("createShortsBtn").addEventListener("click", async () => {
     }
 
     $("shortsMessage").textContent =
-      "Video uploaded. AI processing started.";
+      mode === "ai"
+        ? "Video uploaded. AI is finding the best speech moments..."
+        : "Video uploaded. Your manual Short is processing.";
 
     pollShortsJob(result.jobId);
 
@@ -638,7 +641,7 @@ function pollShortsJob(jobId) {
         shortsPolling = null;
         $("createShortsBtn").disabled = false;
         $("shortsMessage").textContent =
-          "❌ " + (job.error || "Processing failed.");
+          "❌ " + (job.error || job.message || "Processing failed.");
       }
 
     } catch (error) {
