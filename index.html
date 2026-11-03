@@ -23,6 +23,7 @@ button:disabled{opacity:.5;cursor:not-allowed}
 .danger{background:#dc2626}
 .success{background:#15803d}
 .test{background:#0369a1}
+.retry{background:#d97706}
 .checks{display:flex;flex-wrap:wrap;gap:15px;margin-top:10px}
 .checks label{display:flex;align-items:center;gap:7px;margin:0}
 .checks input{width:auto}
@@ -164,6 +165,7 @@ Captions are OFF by default. Turning them ON still uses your existing OpenAI API
 </p>
 
 <button type="button" id="createShortsBtn">✨ Create Shorts</button>
+<p class="small">If your network disconnects, you can retry without selecting the video again. A retry starts the upload again from 0%.</p>
 
 <div id="shortsMessage" class="status">
 Select a video to get started.
@@ -585,6 +587,8 @@ $("createShortsBtn").addEventListener("click", async () => {
   }
 
   $("createShortsBtn").disabled = true;
+  $("createShortsBtn").textContent = "⏳ Uploading...";
+  $("createShortsBtn").classList.remove("retry");
   $("shortsResults").innerHTML = "";
   $("shortsProgressBar").style.width = "0%";
   $("shortsProgressText").textContent = "";
@@ -605,8 +609,10 @@ $("createShortsBtn").addEventListener("click", async () => {
     pollShortsJob(result.jobId);
 
   } catch (error) {
-    $("shortsMessage").textContent = "❌ " + error.message;
+    $("shortsMessage").textContent = "❌ " + error.message + " Tap Retry Upload to try again. The selected video will remain selected; upload restarts from 0%.";
     $("createShortsBtn").disabled = false;
+    $("createShortsBtn").textContent = "🔄 Retry Upload";
+    $("createShortsBtn").classList.add("retry");
   }
 });
 
@@ -631,6 +637,8 @@ function pollShortsJob(jobId) {
         clearInterval(shortsPolling);
         shortsPolling = null;
         $("createShortsBtn").disabled = false;
+        $("createShortsBtn").textContent = "✨ Create Shorts";
+        $("createShortsBtn").classList.remove("retry");
         $("shortsMessage").textContent =
           "✅ Shorts creation completed!";
         showShortsResults(jobId, job.outputs || []);
@@ -640,6 +648,8 @@ function pollShortsJob(jobId) {
         clearInterval(shortsPolling);
         shortsPolling = null;
         $("createShortsBtn").disabled = false;
+        $("createShortsBtn").textContent = "✨ Create Shorts";
+        $("createShortsBtn").classList.remove("retry");
         $("shortsMessage").textContent =
           "❌ " + (job.error || job.message || "Processing failed.");
       }
@@ -648,6 +658,8 @@ function pollShortsJob(jobId) {
       clearInterval(shortsPolling);
       shortsPolling = null;
       $("createShortsBtn").disabled = false;
+      $("createShortsBtn").textContent = "✨ Create Shorts";
+      $("createShortsBtn").classList.remove("retry");
       $("shortsMessage").textContent =
         "Status check failed: " + error.message;
     }
