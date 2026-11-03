@@ -1147,6 +1147,91 @@ app.post(
   }
 );
 
+// ==========================================
+// CHUNKED SHORTS UPLOAD (mobile/network friendly)
+// ==========================================
+const CHUNK_UPLOAD_DIR = path.join(UPLOAD_DIR, "shorts-chunks");
+fs.mkdirSync(CHUNK_UPLOAD_DIR, { recursive: true });
+const chunkUploads = new Map();
+const chunkBody = express.raw({ type: "application/octet-stream", limit: "8mb" });
+
+app.post("/api/shorts/upload/init", (req, res) => {
+  const { name, size, type, mode, count, duration, captions, start, end } = req.body || {};
+  const bytes = Number(size);
+  if (!Number.isFinite(bytes) || bytes <= 0 || bytes > 1024 * 1024 * 1024) {
+    return res.status(400).json({ error: "Video must be between 1 byte and 1 GB." });
+  }
+  if (mode !== "manual" && (!process.env.GEMINI_API_KEY || Number(count) !== 5 || ![30,45,60].includes(Number(duration)))) {
+    return res.status(400).json({ error: "AI mode needs Gemini configured and exactly 5 Shorts of 30, 45 or 60 seconds." });
+  }
+  if (captions && !process.env.OPENAI_API_KEY) {
+    return res.status(400).json({ error: "Roman Urdu captions require OPENAI_API_KEY. Captions are optional." });
+  }
+  const uploadId = crypto.randomUUID();
+  const totalChunks = Math.ceil(bytes / (5 * 1024 * 1024));
+  chunkUploads.set(uploadId, {
+    name: String(name || "video.mp4").slice(0, 180), size: bytes,
+    totalChunks, received: new Set(), mode: mode === "manual" ? "manual" : "ai",
+    count: Number(count) || 5, duration: Number(duration) || 30,
+    captions: Boolean(captions), start: Number(start ?? 0), end: Number(end ?? 60),
+    createdAt: Date.now()
+  });
+  res.json({ uploadId, chunkSize: 5 * 1024 * 1024, totalChunks });
+});
+
+app.put("/api/shorts/upload/:uploadId/:index", chunkBody, (req, res) => {
+  const session = chunkUploads.get(req.params.uploadId);
+  const index = Number(req.params.index);
+  if (!session) return res.status(404).json({ error: "Upload session expired. Please start again." });
+  if (!Number.isInteger(index) || index < 0 || index >= session.totalChunks || !Buffer.isBuffer(req.body)) {
+    return res.status(400).json({ error: "Invalid upload chunk." });
+  }
+  const expected = index === session.totalChunks - 1
+    ? session.size - index * 5 * 1024 * 1024 : 5 * 1024 * 1024;
+  if (req.body.length !== expected) return res.status(400).json({ error: "Chunk size mismatch. Please retry this part." });
+  fs.writeFileSync(path.join(CHUNK_UPLOAD_DIR, session.uploadId || req.params.uploadId + "-" + index), req.body);
+  session.received.add(index);
+  res.json({ success: true, received: session.received.size, total: session.totalChunks });
+});
+
+app.post("/api/shorts/upload/:uploadId/complete", (req, res) => {
+  const uploadId = req.params.uploadId;
+  const session = chunkUploads.get(uploadId);
+  if (!session) return res.status(404).json({ error: "Upload session expired. Please start again." });
+  if (session.received.size !== session.totalChunks) {
+    return res.status(400).json({ error: "Upload is incomplete. Missing " + (session.totalChunks - session.received.size) + " parts." });
+  }
+  const input = path.join(UPLOAD_DIR, "shorts-" + crypto.randomUUID() + path.extname(session.name).slice(0, 12));
+  try {
+    const fd = fs.openSync(input, "w");
+    let written = 0;
+    for (let i = 0; i < session.totalChunks; i++) {
+      const part = path.join(CHUNK_UPLOAD_DIR, uploadId + "-" + i);
+      const data = fs.readFileSync(part);
+      fs.writeSync(fd, data);
+      written += data.length;
+      fs.unlinkSync(part);
+    }
+    fs.closeSync(fd);
+    if (written !== session.size) throw new Error("Assembled video size does not match original.");
+    chunkUploads.delete(uploadId);
+    const job = {
+      id: crypto.randomUUID(), input, originalName: session.name,
+      mode: session.mode, count: session.count, duration: session.duration,
+      start: session.start, end: session.end, captions: session.captions,
+      status: "queued", progress: 0, message: "Upload complete. Job received.",
+      outputs: [], createdAt: new Date().toISOString()
+    };
+    shortsJobs.set(job.id, job);
+    processShorts(job);
+    res.json({ success: true, id: job.id, jobId: job.id, status: job.status });
+  } catch (error) {
+    if (fs.existsSync(input)) fs.unlink(input, () => {});
+    console.error("Chunk assembly error:", error);
+    res.status(500).json({ error: "Could not assemble uploaded video: " + error.message });
+  }
+});
+
 app.get("/api/shorts/:id", (req, res) => {
   const job = shortsJobs.get(req.params.id);
 
