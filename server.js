@@ -925,7 +925,7 @@ async function processAIShorts(job) {
   }
 
   const rawClips = await analyseVideoWithGemini(job, videoDuration);
-  updateJob(job, { progress: 58, message: "Checking timestamps and preparing your five Shorts..." });
+  updateJob(job, { progress: 58, message: "Checking timestamps and preparing your Shorts..." });
 
   const candidates = rawClips.map(clip => ({
     start: Number(clip.start),
@@ -953,8 +953,8 @@ async function processAIShorts(job) {
     if (selected.length >= job.count) break;
   }
   selected.sort((a, b) => a.start - b.start);
-  if (selected.length !== job.count) {
-    throw new Error("Gemini found only " + selected.length + " separate usable moments. Try a different video or duration.");
+  if (selected.length < Math.min(job.count, 4)) {
+    throw new Error("Gemini found only " + selected.length + " usable moments. At least " + Math.min(job.count, 4) + " are needed. Try a different video or duration.");
   }
 
   let captionData = null;
@@ -995,7 +995,7 @@ async function processAIShorts(job) {
   updateJob(job, {
     status: "completed",
     progress: 100,
-    message: "Gemini selected and rendered your five Shorts. Preview each before publishing.",
+    message: "Gemini selected and rendered " + selected.length + " Shorts. Preview each before publishing.",
     outputs,
     clipDetails
   });
