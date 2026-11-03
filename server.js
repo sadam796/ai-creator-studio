@@ -835,33 +835,55 @@ async function analyseVideoWithGemini(job, videoDuration) {
       "Return exactly " + job.count + " clips if enough suitable material exists. Rank by editorial quality and do not overlap clips."
     ].join(" ");
 
-    const response = await fetch(
-      "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key=" + encodeURIComponent(key),
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          contents: [{
-            parts: [
-              {
-                fileData: {
-                  mimeType: activeFile.mimeType || "video/mp4",
-                  fileUri: activeFile.uri
-                }
-              },
-              { text: prompt }
-            ]
-          }],
-          generationConfig: {
-            responseMimeType: "application/json",
-            temperature: 0.2
-          }
-        })
+    const geminiRequestBody = JSON.stringify({
+      contents: [{
+        parts: [
+          {
+            fileData: {
+              mimeType: activeFile.mimeType || "video/mp4",
+              fileUri: activeFile.uri
+            }
+          },
+          { text: prompt }
+        ]
+      }],
+      generationConfig: {
+        responseMimeType: "application/json",
+        temperature: 0.2
       }
-    );
-    const data = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      throw new Error("Gemini analysis failed: " + (((data.error || {}).message) || response.status));
+    });
+
+    let response;
+    let data = {};
+    for (let attempt = 1; attempt <= 4; attempt++) {
+      response = await fetch(
+        "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key=" + encodeURIComponent(key),
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: geminiRequestBody
+        }
+      );
+      data = await response.json().catch(() => ({}));
+      if (response.ok) break;
+
+      const status = response.status;
+      const message = (((data.error || {}).message) || String(status));
+      const temporary = status === 429 || status === 500 || status === 502 || status === 503 || status === 504;
+      if (!temporary || attempt === 4) {
+        throw new Error("Gemini analysis failed (" + status + "): " + message);
+      }
+
+      const waitMs = attempt * 10000;
+      updateJob(job, {
+        progress: 42,
+        message: "Gemini is busy. Automatic retry " + attempt + "/3 in " + Math.round(waitMs / 1000) + " seconds..."
+      });
+      await new Promise(resolve => setTimeout(resolve, waitMs));
+    }
+
+    if (!response || !response.ok) {
+      throw new Error("Gemini analysis failed: temporary service overload. Please try again later.");
     }
     const text = (((data.candidates || [])[0] || {}).content || {}).parts || [];
     const outputText = text.map(part => part.text || "").join("\n");
