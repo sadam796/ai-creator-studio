@@ -716,9 +716,61 @@ async function processManualShort(job) {
   });
 }
 
-// ==========================================
-// AI SHORTS MODE
-// ==========================================
+// Extract small JPEG samples for visual review. The complete video is not sent to the vision model.
+function extractVisionFrame(input, timestamp) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(FFMPEG, ["-ss", String(Math.max(0, timestamp)), "-i", input, "-frames:v", "1", "-vf", "scale=384:-2", "-q:v", "6", "-f", "image2pipe", "-vcodec", "mjpeg", "pipe:1"]);
+    const chunks = [];
+    child.stdout.on("data", chunk => chunks.push(chunk));
+    child.stderr.on("data", () => {});
+    child.on("error", reject);
+    child.on("close", code => {
+      const buffer = Buffer.concat(chunks);
+      if (code !== 0 || !buffer.length) return reject(new Error("Could not sample a video frame for visual AI review."));
+      resolve(buffer.toString("base64"));
+    });
+  });
+}
+
+async function rankClipsByVisual(openai, input, candidates) {
+  const sampled = [];
+  for (let i = 0; i < candidates.length; i++) {
+    const clip = candidates[i];
+    const duration = clip.end - clip.start;
+    const times = [clip.start + Math.min(2, duration * 0.25), clip.start + Math.min(duration - 0.5, duration * 0.75)];
+    const frames = [];
+    for (const time of times) frames.push(await extractVisionFrame(input, time));
+    sampled.push({ id: i + 1, title: clip.title, start: clip.start, end: clip.end, frames });
+  }
+
+  const content = [{
+    type: "text",
+    text: "Review two sampled frames for each candidate moment. Score visual clarity, interesting action or expression, subject visibility, and suitability for a vertical crop. Do not assume motion between still frames. Return JSON only with ranked: [{id,score,reason}], score 1-10, include every candidate."
+  }];
+  for (const item of sampled) {
+    content.push({ type: "text", text: "Candidate " + item.id + " (" + item.start.toFixed(1) + "s to " + item.end.toFixed(1) + "s): " + item.title });
+    for (const frame of item.frames) content.push({
+      type: "image_url",
+      image_url: { url: "data:image/jpeg;base64," + frame, detail: "low" }
+    });
+  }
+
+  const response = await openai.chat.completions.create({
+    model: "gpt-4o-mini",
+    response_format: { type: "json_object" },
+    messages: [
+      { role: "system", content: "You are a careful video editor evaluating sampled frames. Prefer clear, engaging visuals and subjects that fit a 9:16 crop. Penalize blank, blurry, obstructed, or confusing frames. You have not seen the frames between samples." },
+      { role: "user", content }
+    ]
+  });
+  const result = JSON.parse(response.choices[0].message.content || "{}");
+  const rankMap = new Map((Array.isArray(result.ranked) ? result.ranked : []).map(x => [Number(x.id), { score: Number(x.score) || 0, reason: String(x.reason || "").slice(0, 160) }]));
+  return candidates.map((clip, index) => ({
+    ...clip,
+    visualScore: (rankMap.get(index + 1) || {}).score || 0,
+    visualReason: (rankMap.get(index + 1) || {}).reason || "Visual score unavailable"
+  })).sort((a, b) => b.visualScore - a.visualScore);
+}
 
 async function processAIShorts(job) {
   const openai = getOpenAI();
@@ -815,7 +867,7 @@ async function processAIShorts(job) {
         {
           role: "system",
           content:
-            "You are an expert short-video editor. Read the transcript even if it contains Urdu, Hindi, Roman Urdu, or English. Select the most engaging, self-contained moments that make sense without the rest of the long video. Prefer strong hooks, useful information, funny or emotional moments, clear explanations, and complete thoughts. Avoid greetings, long pauses, repeated content, incomplete sentences, and abrupt cut-offs. Return JSON with a clips array. Each clip must contain start, end, and a short title. Use only supplied timestamps; never invent timestamps. Each clip must be at least 5 seconds and no longer than the requested duration or the video length. Prefer different, non-overlapping moments. Return up to the requested number of clips."
+            "You are an expert short-video editor. Read the transcript even if it contains Urdu, Hindi, Roman Urdu, or English. Select the most engaging, self-contained moments that make sense without the rest of the long video. Prefer strong hooks, useful information, funny or emotional moments, clear explanations, and complete thoughts. Avoid greetings, long pauses, repeated content, incomplete sentences, and abrupt cut-offs. Return JSON with a clips array. Each clip must contain start, end, and a short title. Use only supplied timestamps; never invent timestamps. Each clip must be at least 5 seconds and no longer than the requested duration or the video length. Prefer different, non-overlapping moments. Return up to 10 strong candidate moments so visual review can choose the best five."
         },
         {
           role: "user",
@@ -864,15 +916,29 @@ async function processAIShorts(job) {
     .filter(clip => clip.end - clip.start >= 5)
     .sort((a, b) => a.start - b.start);
 
+  updateJob(job, {
+    progress: 52,
+    message: "AI is checking sampled video frames for visual quality..."
+  });
+
+  // Two low-resolution frames from each candidate are reviewed by vision AI.
+  // This samples the video; it does not watch every frame continuously.
+  const visualCandidates = await rankClipsByVisual(
+    openai,
+    job.input,
+    candidates.slice(0, 10)
+  );
+
   const clips = [];
   let lastClipEnd = -1;
 
-  for (const clip of candidates) {
+  for (const clip of visualCandidates) {
     if (clip.start < lastClipEnd) continue;
     clips.push(clip);
     lastClipEnd = clip.end;
     if (clips.length >= job.count) break;
   }
+  clips.sort((a, b) => a.start - b.start);
 
   if (!clips.length) {
     throw new Error(
