@@ -241,6 +241,7 @@ app.get("/api/health", (req, res) => {
       readTokens() && readTokens().refresh_token
     ),
     openAIConfigured: Boolean(process.env.OPENAI_API_KEY),
+    geminiConfigured: Boolean(process.env.GEMINI_API_KEY),
     ffmpeg: FFMPEG,
     ffprobe: FFPROBE,
     shortsApi: "available",
@@ -716,306 +717,249 @@ async function processManualShort(job) {
   });
 }
 
-// Extract small JPEG samples for visual review. The complete video is not sent to the vision model.
-function extractVisionFrame(input, timestamp) {
-  return new Promise((resolve, reject) => {
-    const child = spawn(FFMPEG, ["-ss", String(Math.max(0, timestamp)), "-i", input, "-frames:v", "1", "-vf", "scale=384:-2", "-q:v", "6", "-f", "image2pipe", "-vcodec", "mjpeg", "pipe:1"]);
-    const chunks = [];
-    child.stdout.on("data", chunk => chunks.push(chunk));
-    child.stderr.on("data", () => {});
-    child.on("error", reject);
-    child.on("close", code => {
-      const buffer = Buffer.concat(chunks);
-      if (code !== 0 || !buffer.length) return reject(new Error("Could not sample a video frame for visual AI review."));
-      resolve(buffer.toString("base64"));
-    });
-  });
+// ==========================================
+// GEMINI VIDEO UNDERSTANDING
+// ==========================================
+
+function getGeminiKey() {
+  if (!process.env.GEMINI_API_KEY) {
+    throw new Error("Gemini API key is not configured. Add GEMINI_API_KEY in Hostinger environment variables.");
+  }
+  return process.env.GEMINI_API_KEY;
 }
 
-async function rankClipsByVisual(openai, input, candidates) {
-  const sampled = [];
-  for (let i = 0; i < candidates.length; i++) {
-    const clip = candidates[i];
-    const duration = clip.end - clip.start;
-    const times = [clip.start + Math.min(2, duration * 0.25), clip.start + Math.min(duration - 0.5, duration * 0.75)];
-    const frames = [];
-    for (const time of times) frames.push(await extractVisionFrame(input, time));
-    sampled.push({ id: i + 1, title: clip.title, start: clip.start, end: clip.end, frames });
+async function createGeminiUploadSession(input) {
+  const key = getGeminiKey();
+  const stats = fs.statSync(input);
+  const mimeType = "video/mp4";
+  const startResponse = await fetch(
+    "https://generativelanguage.googleapis.com/upload/v1beta/files?key=" + encodeURIComponent(key),
+    {
+      method: "POST",
+      headers: {
+        "X-Goog-Upload-Protocol": "resumable",
+        "X-Goog-Upload-Command": "start",
+        "X-Goog-Upload-Header-Content-Length": String(stats.size),
+        "X-Goog-Upload-Header-Content-Type": mimeType,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({ file: { display_name: path.basename(input) } })
+    }
+  );
+  if (!startResponse.ok) {
+    throw new Error("Gemini upload setup failed: " + (await startResponse.text()).slice(0, 500));
   }
+  const uploadUrl = startResponse.headers.get("x-goog-upload-url");
+  if (!uploadUrl) throw new Error("Gemini did not return a resumable upload URL.");
 
-  const content = [{
-    type: "text",
-    text: "Review two sampled frames for each candidate moment. Score visual clarity, interesting action or expression, subject visibility, and suitability for a vertical crop. Do not assume motion between still frames. Return JSON only with ranked: [{id,score,reason}], score 1-10, include every candidate."
-  }];
-  for (const item of sampled) {
-    content.push({ type: "text", text: "Candidate " + item.id + " (" + item.start.toFixed(1) + "s to " + item.end.toFixed(1) + "s): " + item.title });
-    for (const frame of item.frames) content.push({
-      type: "image_url",
-      image_url: { url: "data:image/jpeg;base64," + frame, detail: "low" }
-    });
-  }
-
-  const response = await openai.chat.completions.create({
-    model: "gpt-4o-mini",
-    response_format: { type: "json_object" },
-    messages: [
-      { role: "system", content: "You are a careful video editor evaluating sampled frames. Prefer clear, engaging visuals and subjects that fit a 9:16 crop. Penalize blank, blurry, obstructed, or confusing frames. You have not seen the frames between samples." },
-      { role: "user", content }
-    ]
+  const uploadResponse = await fetch(uploadUrl, {
+    method: "POST",
+    headers: {
+      "Content-Length": String(stats.size),
+      "X-Goog-Upload-Offset": "0",
+      "X-Goog-Upload-Command": "upload, finalize",
+      "Content-Type": mimeType
+    },
+    body: fs.createReadStream(input),
+    duplex: "half"
   });
-  const result = JSON.parse(response.choices[0].message.content || "{}");
-  const rankMap = new Map((Array.isArray(result.ranked) ? result.ranked : []).map(x => [Number(x.id), { score: Number(x.score) || 0, reason: String(x.reason || "").slice(0, 160) }]));
-  return candidates.map((clip, index) => ({
-    ...clip,
-    visualScore: (rankMap.get(index + 1) || {}).score || 0,
-    visualReason: (rankMap.get(index + 1) || {}).reason || "Visual score unavailable"
-  })).sort((a, b) => b.visualScore - a.visualScore);
+  const bodyText = await uploadResponse.text();
+  let result = {};
+  try { result = bodyText ? JSON.parse(bodyText) : {}; } catch (error) {}
+  if (!uploadResponse.ok) {
+    throw new Error("Gemini video upload failed: " + ((result.error && result.error.message) || bodyText).slice(0, 600));
+  }
+  if (!result.file || !result.file.name || !result.file.uri) {
+    throw new Error("Gemini upload did not return a usable video file.");
+  }
+  return result.file;
+}
+
+async function waitForGeminiVideo(file) {
+  const key = getGeminiKey();
+  let current = file;
+  for (let attempt = 0; attempt < 90; attempt++) {
+    if (current.state === "ACTIVE") return current;
+    if (current.state === "FAILED") throw new Error("Google Gemini could not process this video. Try a smaller MP4.");
+    await new Promise(resolve => setTimeout(resolve, 2000));
+    const response = await fetch(
+      "https://generativelanguage.googleapis.com/v1beta/" +
+      current.name + "?key=" + encodeURIComponent(key)
+    );
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error("Gemini video status check failed: " + ((body.error && body.error.message) || response.status));
+    current = body;
+  }
+  throw new Error("Gemini video processing is taking too long. Please retry later.");
+}
+
+async function deleteGeminiVideo(fileName) {
+  if (!fileName || !process.env.GEMINI_API_KEY) return;
+  try {
+    await fetch(
+      "https://generativelanguage.googleapis.com/v1beta/" +
+      fileName + "?key=" + encodeURIComponent(process.env.GEMINI_API_KEY),
+      { method: "DELETE" }
+    );
+  } catch (error) {
+    console.error("Gemini temporary file cleanup failed:", error.message);
+  }
+}
+
+async function analyseVideoWithGemini(job, videoDuration) {
+  const key = getGeminiKey();
+  updateJob(job, {
+    progress: 12,
+    message: "Uploading video to Google Gemini for audio and visual analysis..."
+  });
+
+  let uploadedFile = null;
+  try {
+    uploadedFile = await createGeminiUploadSession(job.input);
+    updateJob(job, { progress: 25, message: "Gemini is preparing the video..." });
+    const activeFile = await waitForGeminiVideo(uploadedFile);
+
+    updateJob(job, {
+      progress: 42,
+      message: "Gemini is analysing speech, audio and video scenes..."
+    });
+
+    const prompt = [
+      "You are an expert editor selecting the five strongest YouTube Shorts moments from this complete video.",
+      "Analyse BOTH audio/speech and actual visual content. Listen to spoken words, tone, reactions, music and meaningful sound; inspect scenes, people, objects, actions, expressions, clarity and visual changes.",
+      "Choose exactly " + job.count + " distinct, non-overlapping moments, each approximately " + job.duration + " seconds long.",
+      "Prefer strong hooks, complete useful/funny/emotional thoughts, interesting visible action or expression, clear audio, and visuals that work in a vertical 9:16 crop.",
+      "Avoid greetings, dead air, repeated sections, incomplete sentences and moments that need missing context.",
+      "Use timestamps from the supplied video in seconds. Do not invent timestamps. Keep every start/end inside " + videoDuration.toFixed(2) + " seconds.",
+      "Return JSON only: { clips: [ { start: 12.5, end: 42.5, title: 'Short title', reason: 'Why engaging', score: 9 } ] }",
+      "Return exactly " + job.count + " clips if enough suitable material exists. Rank by editorial quality and do not overlap clips."
+    ].join(" ");
+
+    const response = await fetch(
+      "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=" + encodeURIComponent(key),
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          contents: [{
+            parts: [
+              {
+                fileData: {
+                  mimeType: activeFile.mimeType || "video/mp4",
+                  fileUri: activeFile.uri
+                }
+              },
+              { text: prompt }
+            ]
+          }],
+          generationConfig: {
+            responseMimeType: "application/json",
+            temperature: 0.2
+          }
+        })
+      }
+    );
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error("Gemini analysis failed: " + (((data.error || {}).message) || response.status));
+    }
+    const text = (((data.candidates || [])[0] || {}).content || {}).parts || [];
+    const outputText = text.map(part => part.text || "").join("\n");
+    if (!outputText) throw new Error("Gemini returned an empty video analysis.");
+    const result = JSON.parse(outputText);
+    if (!Array.isArray(result.clips) || !result.clips.length) {
+      throw new Error("Gemini could not identify suitable moments in this video.");
+    }
+    return result.clips;
+  } finally {
+    if (uploadedFile && uploadedFile.name) await deleteGeminiVideo(uploadedFile.name);
+  }
 }
 
 async function processAIShorts(job) {
-  const openai = getOpenAI();
-
-  updateJob(job, {
-    status: "processing",
-    progress: 5,
-    message: "Checking video..."
-  });
-
+  updateJob(job, { status: "processing", progress: 5, message: "Checking video..." });
   const videoDuration = await getVideoDuration(job.input);
-
-  // Keep API usage predictable for the user's small monthly budget.
-  // Reject longer videos before extracting audio or making paid API calls.
   if (videoDuration > 20 * 60) {
-    throw new Error(
-      "Budget AI mode supports videos up to 20 minutes. Use Manual mode for longer videos."
-    );
+    throw new Error("Gemini AI mode supports videos up to 20 minutes. Use a shorter video.");
+  }
+  if (!process.env.GEMINI_API_KEY) {
+    throw new Error("Gemini API key is missing. Add GEMINI_API_KEY in Hostinger environment variables.");
   }
 
-  const audioFile = path.join(
-    SHORTS_DIR,
-    job.id + "-audio.mp3"
-  );
+  const rawClips = await analyseVideoWithGemini(job, videoDuration);
+  updateJob(job, { progress: 58, message: "Checking timestamps and preparing your five Shorts..." });
 
-  updateJob(job, {
-    progress: 10,
-    message: "Extracting audio..."
-  });
+  const candidates = rawClips.map(clip => ({
+    start: Number(clip.start),
+    end: Number(clip.end),
+    title: String(clip.title || "Selected moment").slice(0, 100),
+    reason: String(clip.reason || "").slice(0, 220),
+    score: Number(clip.score) || 0
+  })).filter(clip =>
+    Number.isFinite(clip.start) &&
+    Number.isFinite(clip.end) &&
+    clip.start >= 0 &&
+    clip.start < videoDuration &&
+    clip.end > clip.start
+  ).map(clip => ({
+    ...clip,
+    end: Math.min(videoDuration, clip.end, clip.start + job.duration)
+  })).filter(clip => clip.end - clip.start >= Math.min(20, job.duration * 0.7))
+    .sort((a, b) => b.score - a.score);
 
-  await runCommand(FFMPEG, [
-    "-y",
-    "-i", job.input,
-    "-vn",
-    "-ac", "1",
-    "-ar", "16000",
-    "-b:a", "48k",
-    audioFile
-  ]);
-
-  const audioStats = fs.statSync(audioFile);
-
-  if (audioStats.size > 24 * 1024 * 1024) {
-    fs.unlink(audioFile, () => {});
-
-    throw new Error(
-      "Audio exceeds the transcription limit. Use a shorter video."
-    );
+  const selected = [];
+  for (const clip of candidates) {
+    const overlaps = selected.some(existing => clip.start < existing.end && clip.end > existing.start);
+    if (overlaps) continue;
+    selected.push(clip);
+    if (selected.length >= job.count) break;
   }
-
-  updateJob(job, {
-    progress: 25,
-    message: "AI is transcribing your video..."
-  });
-
-  let transcription;
-
-  try {
-    transcription = await openai.audio.transcriptions.create({
-      file: fs.createReadStream(audioFile),
-      model: "whisper-1",
-      response_format: "verbose_json"
-    });
-  } finally {
-    if (fs.existsSync(audioFile)) {
-      fs.unlink(audioFile, () => {});
-    }
-  }
-
-  const segments = transcription.segments || [];
-
-  if (!segments.length) {
-    throw new Error(
-      "AI could not find timestamped speech."
-    );
-  }
-
-  updateJob(job, {
-    progress: 45,
-    message: "AI is selecting interesting moments..."
-  });
-
-  const transcript = segments.map(segment => ({
-    start: segment.start,
-    end: segment.end,
-    text: segment.text
-  }));
-
-  const response =
-    await openai.chat.completions.create({
-      model: "gpt-4o-mini",
-      response_format: { type: "json_object" },
-      messages: [
-        {
-          role: "system",
-          content:
-            "You are an expert short-video editor. Read the transcript even if it contains Urdu, Hindi, Roman Urdu, or English. Select the most engaging, self-contained moments that make sense without the rest of the long video. Prefer strong hooks, useful information, funny or emotional moments, clear explanations, and complete thoughts. Avoid greetings, long pauses, repeated content, incomplete sentences, and abrupt cut-offs. Return JSON with a clips array. Each clip must contain start, end, and a short title. Use only supplied timestamps; never invent timestamps. Each clip must be at least 5 seconds and no longer than the requested duration or the video length. Prefer different, non-overlapping moments. Return up to 10 strong candidate moments so visual review can choose the best five."
-        },
-        {
-          role: "user",
-          content: JSON.stringify({
-            videoDuration,
-            requestedClips: job.count,
-            requestedClipDuration: job.duration,
-            transcript
-          })
-        }
-      ]
-    });
-
-  const result = JSON.parse(
-    response.choices[0].message.content || "{}"
-  );
-
-  if (
-    !Array.isArray(result.clips) ||
-    result.clips.length === 0
-  ) {
-    throw new Error(
-      "AI did not return any usable clips."
-    );
-  }
-
-  // Validate AI timestamps before rendering. Keep clips chronological,
-  // within the source video, within the requested duration, and non-overlapping.
-  const candidates = result.clips
-    .map(clip => ({
-      start: Number(clip.start),
-      end: Number(clip.end),
-      title: String(clip.title || "").slice(0, 100)
-    }))
-    .filter(clip =>
-      Number.isFinite(clip.start) &&
-      Number.isFinite(clip.end) &&
-      clip.start >= 0 &&
-      clip.start < videoDuration &&
-      clip.end > clip.start
-    )
-    .map(clip => ({
-      ...clip,
-      end: Math.min(videoDuration, clip.end, clip.start + job.duration)
-    }))
-    .filter(clip => clip.end - clip.start >= 5)
-    .sort((a, b) => a.start - b.start);
-
-  updateJob(job, {
-    progress: 52,
-    message: "AI is checking sampled video frames for visual quality..."
-  });
-
-  // Two low-resolution frames from each candidate are reviewed by vision AI.
-  // This samples the video; it does not watch every frame continuously.
-  const visualCandidates = await rankClipsByVisual(
-    openai,
-    job.input,
-    candidates.slice(0, 10)
-  );
-
-  const clips = [];
-  let lastClipEnd = -1;
-
-  for (const clip of visualCandidates) {
-    if (clip.start < lastClipEnd) continue;
-    clips.push(clip);
-    lastClipEnd = clip.end;
-    if (clips.length >= job.count) break;
-  }
-  clips.sort((a, b) => a.start - b.start);
-
-  if (!clips.length) {
-    throw new Error(
-      "AI could not find valid, separate moments. Try another video or a longer clip duration."
-    );
+  selected.sort((a, b) => a.start - b.start);
+  if (selected.length !== job.count) {
+    throw new Error("Gemini found only " + selected.length + " separate usable moments. Try a different video or duration.");
   }
 
   let captionData = null;
-
   if (job.captions) {
-    updateJob(job, {
-      progress: 55,
-      message: "Preparing Roman Urdu captions..."
-    });
-
-    captionData = await createRomanUrduSRT(
-      openai,
-      job.input,
-      job.id
-    );
+    updateJob(job, { progress: 62, message: "Creating optional Roman Urdu captions..." });
+    captionData = await createRomanUrduSRT(getOpenAI(), job.input, job.id);
   }
 
   const outputs = [];
-
-  for (let i = 0; i < clips.length; i++) {
-    const clip = clips[i];
-    const start = clip.start;
-    const end = clip.end;
-
-    const filename =
-      "short-" + job.id + "-" + (i + 1) + ".mp4";
-
-    const output = path.join(
-      SHORTS_DIR,
-      filename
-    );
-
+  const clipDetails = [];
+  for (let i = 0; i < selected.length; i++) {
+    const clip = selected[i];
+    const filename = "short-" + job.id + "-" + (i + 1) + ".mp4";
+    const output = path.join(SHORTS_DIR, filename);
     const subtitleFile = captionData
-      ? writeClipSRT(captionData, job.id, i + 1, start, end - start)
+      ? writeClipSRT(captionData, job.id, i + 1, clip.start, clip.end - clip.start)
       : null;
-
     try {
-      await renderShort(
-        job.input,
-        output,
-        start,
-        end - start,
-        subtitleFile
-      );
+      await renderShort(job.input, output, clip.start, clip.end - clip.start, subtitleFile);
     } finally {
-      if (subtitleFile && fs.existsSync(subtitleFile)) {
-        fs.unlink(subtitleFile, () => {});
-      }
+      if (subtitleFile && fs.existsSync(subtitleFile)) fs.unlink(subtitleFile, () => {});
     }
-
     outputs.push(filename);
-
-    updateJob(job, {
-      progress:
-        60 + Math.round(((i + 1) / clips.length) * 35),
-      message:
-        "Rendering Short " + (i + 1) +
-        " of " + clips.length + "..."
+    clipDetails.push({
+      fileName: filename,
+      title: clip.title,
+      start: clip.start,
+      end: clip.end,
+      reason: clip.reason,
+      score: clip.score
     });
-  }
-
-  if (!outputs.length) {
-    throw new Error(
-      "AI selected no valid clips."
-    );
+    updateJob(job, {
+      progress: 62 + Math.round(((i + 1) / selected.length) * 35),
+      message: "Rendering Short " + (i + 1) + " of " + selected.length + "..."
+    });
   }
 
   updateJob(job, {
     status: "completed",
     progress: 100,
-    message: "Your AI Shorts are ready.",
-    outputs
+    message: "Gemini selected and rendered your five Shorts. Preview each before publishing.",
+    outputs,
+    clipDetails
   });
 }
 
@@ -1126,6 +1070,13 @@ app.post(
         return res.status(400).json({
           error:
             "Budget AI mode creates exactly 5 Shorts of 30, 45 or 60 seconds."
+        });
+      }
+
+      if (mode === "ai" && !process.env.GEMINI_API_KEY) {
+        fs.unlink(req.file.path, () => {});
+        return res.status(400).json({
+          error: "Gemini API key is not configured. Add GEMINI_API_KEY in Hostinger environment variables."
         });
       }
 
