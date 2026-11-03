@@ -115,12 +115,12 @@ hr{border:0;border-top:1px solid #374151;margin:20px 0}
 <h2>🎬 AI Shorts Maker</h2>
 <p class="small">
 Upload a video and create vertical Shorts. Manual mode uses free FFmpeg.
-Budget AI mode analyses speech and selects 5 moments, then FFmpeg renders them.
+Budget AI mode analyses speech, checks sampled video frames for visual quality, selects 5 moments, then FFmpeg renders them.
 </p>
 <p class="small">
 <strong>Budget AI limits:</strong> up to 20 minutes per video, 5 Shorts (30–60 seconds).
 Estimated AI cost: about ₹10–₹15 per video; actual API usage may vary.
-AI selects speech moments, not guaranteed best visual scenes. Preview every Short before publishing.
+AI analyses speech and reviews two sampled frames from each candidate moment. It does not watch every frame, so visual quality is improved but not guaranteed. Visual review uses additional API credits. Preview every Short before publishing.
 </p>
 
 <label>Select Long Video</label>
