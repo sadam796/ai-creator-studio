@@ -731,6 +731,14 @@ async function processAIShorts(job) {
 
   const videoDuration = await getVideoDuration(job.input);
 
+  // Keep API usage predictable for the user's small monthly budget.
+  // Reject longer videos before extracting audio or making paid API calls.
+  if (videoDuration > 20 * 60) {
+    throw new Error(
+      "Budget AI mode supports videos up to 20 minutes. Use Manual mode for longer videos."
+    );
+  }
+
   const audioFile = path.join(
     SHORTS_DIR,
     job.id + "-audio.mp3"
@@ -1043,7 +1051,7 @@ app.post(
       if (
         mode === "ai" &&
         (
-          ![5, 10, 15].includes(count) ||
+          count !== 5 ||
           ![30, 45, 60].includes(clipDuration)
         )
       ) {
@@ -1051,7 +1059,7 @@ app.post(
 
         return res.status(400).json({
           error:
-            "AI mode supports 5, 10 or 15 clips and 30, 45 or 60 seconds."
+            "Budget AI mode creates exactly 5 Shorts of 30, 45 or 60 seconds."
         });
       }
 
