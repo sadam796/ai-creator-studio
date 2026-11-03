@@ -114,13 +114,10 @@ hr{border:0;border-top:1px solid #374151;margin:20px 0}
 <div class="card">
 <h2>🎬 AI Shorts Maker</h2>
 <p class="small">
-Upload a video and create vertical Shorts. Manual mode uses free FFmpeg.
-Budget AI mode analyses speech, checks sampled video frames for visual quality, selects 5 moments, then FFmpeg renders them.
+Upload a video and create vertical Shorts. Manual mode uses free FFmpeg. Gemini AI mode analyses the full video audio and visuals together, selects five interesting moments, then FFmpeg renders them.
 </p>
 <p class="small">
-<strong>Budget AI limits:</strong> up to 20 minutes per video, 5 Shorts (30–60 seconds).
-Estimated AI cost: about ₹10–₹15 per video; actual API usage may vary.
-AI analyses speech and reviews two sampled frames from each candidate moment. It does not watch every frame, so visual quality is improved but not guaranteed. Visual review uses additional API credits. Preview every Short before publishing.
+<strong>Gemini AI limits:</strong> up to 20 minutes per video and 5 Shorts (30–60 seconds). Audio, speech and video scenes are analysed together by Google Gemini. Free API quota and rate limits apply and can change; this is not unlimited free processing. Your uploaded video is sent to Google for analysis, and the temporary Gemini file is deleted after analysis. Preview every Short before publishing.
 </p>
 
 <label>Select Long Video</label>
@@ -163,7 +160,7 @@ AI analyses speech and reviews two sampled frames from each candidate moment. It
 <option value="on">ON — Roman Urdu Captions</option>
 </select>
 <p class="small">
-Captions OFF by default. Turning them ON uses additional paid API processing. Keep OFF to control your budget.
+Captions are OFF by default. Turning them ON still uses your existing OpenAI API key and may incur charges. Keep OFF to use Gemini for clip selection without OpenAI credits.
 </p>
 
 <button type="button" id="createShortsBtn">✨ Create Shorts</button>
@@ -735,9 +732,9 @@ async function checkStatus() {
       " | " + yt.message;
 
     $("shortsSystem").textContent =
-      "AI Shorts API: " + (health.shortsApi || "Unknown") +
-      " | OpenAI configured: " + (health.openAIConfigured ? "Yes" : "No") +
-      " | FFmpeg configured: " + (health.ffmpegConfigured ? "Yes" : "Check server");
+      "AI Shorts: Gemini key " + (health.geminiConfigured ? "Configured" : "Missing") +
+      " | OpenAI captions: " + (health.openAIConfigured ? "Configured" : "Not configured") +
+      " | FFmpeg: " + (health.ffmpegConfigured ? "Yes" : "Check server");
 
   } catch (error) {
     $("health").textContent = "Status check failed: " + error.message;
