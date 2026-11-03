@@ -584,18 +584,14 @@ $("createShortsBtn").addEventListener("click", async () => {
   }
 
   const mode = $("shortsMode").value;
-
-  const formData = new FormData();
-  formData.append("video", video);
-  formData.append("mode", mode);
-  formData.append("count", $("shortsCount").value);
-  formData.append("duration", $("shortsDuration").value);
-  formData.append("captions", $("captions").value === "on" ? "true" : "false");
-
-  if (mode === "manual") {
-    formData.append("start", $("manualStart").value);
-    formData.append("end", $("manualEnd").value);
-  }
+  const settings = {
+    mode: mode,
+    count: Number($("shortsCount").value),
+    duration: Number($("shortsDuration").value),
+    captions: $("captions").value === "on",
+    start: mode === "manual" ? Number($("manualStart").value) : 0,
+    end: mode === "manual" ? Number($("manualEnd").value) : 0
+  };
 
   $("createShortsBtn").disabled = true;
   $("createShortsBtn").textContent = "⏳ Uploading...";
