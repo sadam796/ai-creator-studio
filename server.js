@@ -887,10 +887,13 @@ async function analyseVideoWithGemini(job, videoDuration) {
         if (!temporary) throw lastGeminiError;
         if (attempt === 4) break;
 
-        const waitMs = attempt * 10000;
+        const retryAfterHeader = response.headers && response.headers.get
+          ? Number(response.headers.get("retry-after") || 0) * 1000
+          : 0;
+        const waitMs = Math.min(60000, Math.max(attempt * 15000, retryAfterHeader));
         updateJob(job, {
           progress: 42,
-          message: modelName + " is busy. Automatic retry " + attempt + "/3 in " + Math.round(waitMs / 1000) + " seconds..."
+          message: "Gemini " + modelName + " is temporarily busy (HTTP " + status + "). Automatic retry " + attempt + "/3 in " + Math.round(waitMs / 1000) + " seconds..."
         });
         await new Promise(resolve => setTimeout(resolve, waitMs));
       }
