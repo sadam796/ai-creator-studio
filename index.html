@@ -520,41 +520,52 @@ $("shortsMode").addEventListener("change", () => {
   $("aiOptions").style.display = manual ? "none" : "block";
 });
 
-// SHORTS UPLOAD WITH PROGRESS
-function uploadShortsVideo(formData) {
-  return new Promise((resolve, reject) => {
-    const xhr = new XMLHttpRequest();
-
-    xhr.open("POST", "/api/shorts");
-    xhr.responseType = "json";
-
-    xhr.upload.onprogress = event => {
-      if (event.lengthComputable) {
-        const percent = Math.round(
-          event.loaded / event.total * 100
+// CHUNKED SHORTS UPLOAD: 5 MB parts, retry each part automatically
+async function uploadShortsVideo(video, settings) {
+  const init = await api("/api/shorts/upload/init", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      name: video.name, size: video.size, type: video.type,
+      mode: settings.mode, count: settings.count, duration: settings.duration,
+      captions: settings.captions, start: settings.start, end: settings.end
+    })
+  });
+  const chunkSize = init.chunkSize;
+  let uploaded = 0;
+  for (let index = 0; index < init.totalChunks; index++) {
+    const from = index * chunkSize;
+    const part = video.slice(from, Math.min(video.size, from + chunkSize));
+    let sent = false;
+    let lastError = null;
+    for (let attempt = 1; attempt <= 3 && !sent; attempt++) {
+      try {
+        const response = await fetch(
+          "/api/shorts/upload/" + encodeURIComponent(init.uploadId) + "/" + index,
+          { method: "PUT", headers: { "Content-Type": "application/octet-stream" }, body: part }
         );
-
-        $("shortsProgressBar").style.width = percent + "%";
-        $("shortsProgressText").textContent =
-          "Uploading video: " + percent + "%";
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(data.error || "Part " + (index + 1) + " failed.");
+        sent = true;
+      } catch (error) {
+        lastError = error;
+        if (attempt < 3) {
+          $("shortsMessage").textContent = "Network interrupted. Retrying part " + (index + 1) + " of " + init.totalChunks + " (" + attempt + "/2)...";
+          await new Promise(resolve => setTimeout(resolve, attempt * 1500));
+        }
       }
-    };
-
-    xhr.onload = () => {
-      const data = xhr.response || {};
-
-      if (xhr.status >= 200 && xhr.status < 300) {
-        resolve(data);
-      } else {
-        reject(new Error(data.error || "Upload failed."));
-      }
-    };
-
-    xhr.onerror = () => reject(new Error("Network upload failed."));
-    xhr.ontimeout = () => reject(new Error("Upload timed out."));
-
-    xhr.timeout = 0;
-    xhr.send(formData);
+    }
+    if (!sent) throw new Error("Part " + (index + 1) + " upload failed: " + (lastError?.message || "Network error"));
+    uploaded += part.size;
+    const percent = Math.round(uploaded / video.size * 100);
+    $("shortsProgressBar").style.width = percent + "%";
+    $("shortsProgressText").textContent = "Uploading video: " + percent + "% (" + (index + 1) + "/" + init.totalChunks + " parts)";
+  }
+  $("shortsProgressText").textContent = "Joining uploaded parts...";
+  return await api("/api/shorts/upload/" + encodeURIComponent(init.uploadId) + "/complete", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: "{}"
   });
 }
 
@@ -595,7 +606,7 @@ $("createShortsBtn").addEventListener("click", async () => {
   $("shortsMessage").textContent = "Starting upload...";
 
   try {
-    const result = await uploadShortsVideo(formData);
+    const result = await uploadShortsVideo(video, settings);
 
     if (!result.jobId) {
       throw new Error("Server did not return a job ID.");
@@ -609,7 +620,7 @@ $("createShortsBtn").addEventListener("click", async () => {
     pollShortsJob(result.jobId);
 
   } catch (error) {
-    $("shortsMessage").textContent = "❌ " + error.message + " Tap Retry Upload to try again. The selected video will remain selected; upload restarts from 0%.";
+    $("shortsMessage").textContent = "❌ " + error.message + " Tap Retry Upload to try again. The selected video will remain selected. Failed 5 MB parts are retried automatically.";
     $("createShortsBtn").disabled = false;
     $("createShortsBtn").textContent = "🔄 Retry Upload";
     $("createShortsBtn").classList.add("retry");
