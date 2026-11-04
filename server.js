@@ -907,9 +907,54 @@ async function analyseVideoWithGemini(job, videoDuration) {
     const text = (((data.candidates || [])[0] || {}).content || {}).parts || [];
     const outputText = text.map(part => part.text || "").join("\n");
     if (!outputText) throw new Error("Gemini returned an empty video analysis.");
-    const result = JSON.parse(outputText);
+    let result;
+    try {
+      result = JSON.parse(outputText);
+    } catch (parseError) {
+      throw new Error("Gemini returned invalid analysis JSON: " + parseError.message);
+    }
+
+    // If the strict first pass returns no clips, make one simpler recovery pass.
+    // This asks Gemini for the best available moments instead of allowing an empty list.
     if (!Array.isArray(result.clips) || !result.clips.length) {
-      throw new Error("Gemini could not identify suitable moments in this video.");
+      updateJob(job, {
+        progress: 45,
+        message: "Gemini returned no moments. Retrying with a simpler scene-selection prompt..."
+      });
+      const retryBody = JSON.parse(geminiRequestBody);
+      retryBody.contents[0].parts[1].text = [
+        "Review this video and select the best " + job.count + " short clips.",
+        "Choose real moments that are interesting, funny, emotional, useful, or visually engaging.",
+        "Do not return an empty list. If there are not " + job.count + " excellent moments, choose the best available moments anyway.",
+        "Each clip should be about " + job.duration + " seconds. Use accurate start and end timestamps in seconds within " + videoDuration.toFixed(2) + ".",
+        "Do not overlap clips. Return JSON only in this exact structure: { \"clips\": [ { \"start\": 12.5, \"end\": 42.5, \"title\": \"Short title\", \"reason\": \"Why this moment works\", \"score\": 8 } ] }"
+      ].join(" ");
+      const retryModel = geminiModels[1] || geminiModels[0];
+      const retryResponse = await fetch(
+        "https://generativelanguage.googleapis.com/v1beta/models/" + retryModel + ":generateContent?key=" + encodeURIComponent(key),
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(retryBody)
+        }
+      );
+      const retryData = await retryResponse.json().catch(() => ({}));
+      if (!retryResponse.ok) {
+        const retryMessage = (((retryData.error || {}).message) || String(retryResponse.status));
+        throw new Error("Gemini could not select moments on retry (" + retryResponse.status + "): " + retryMessage);
+      }
+      const retryParts = (((retryData.candidates || [])[0] || {}).content || {}).parts || [];
+      const retryText = retryParts.map(part => part.text || "").join("\n").trim();
+      if (!retryText) throw new Error("Gemini returned an empty result on the recovery attempt.");
+      try {
+        result = JSON.parse(retryText);
+      } catch (parseError) {
+        throw new Error("Gemini recovery result was not valid JSON: " + parseError.message);
+      }
+    }
+
+    if (!Array.isArray(result.clips) || !result.clips.length) {
+      throw new Error("Gemini returned no usable clip suggestions after the recovery attempt. Try another video.");
     }
     return result.clips;
   } finally {
